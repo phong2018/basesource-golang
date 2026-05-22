@@ -1,0 +1,5 @@
+.env
+docker/db/data/
+bin/
+tmp/
+*.out

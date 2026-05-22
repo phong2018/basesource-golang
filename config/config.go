@@ -1,0 +1,56 @@
+package config
+
+import (
+	"os"
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	AppPort  string
+	Database DatabaseConfig
+	AWS      AWSConfig
+	Notification NotificationConfig
+}
+
+type DatabaseConfig struct {
+	DSN string
+}
+
+type AWSConfig struct {
+	Region          string
+	AccessKeyID     string
+	SecretAccessKey string
+	S3Bucket        string
+}
+
+type NotificationConfig struct {
+	BaseURL string
+	APIKey  string
+}
+
+func NewConfig() (*Config, error) {
+	_ = godotenv.Load()
+	return &Config{
+		AppPort: getEnv("APP_PORT", "8080"),
+		Database: DatabaseConfig{
+			DSN: getEnv("DATABASE_DSN", "root:root@tcp(localhost:3306)/appdb?parseTime=true&charset=utf8mb4"),
+		},
+		AWS: AWSConfig{
+			Region:          getEnv("AWS_REGION", "ap-northeast-1"),
+			AccessKeyID:     getEnv("AWS_ACCESS_KEY_ID", ""),
+			SecretAccessKey: getEnv("AWS_SECRET_ACCESS_KEY", ""),
+			S3Bucket:        getEnv("AWS_S3_BUCKET", ""),
+		},
+		Notification: NotificationConfig{
+			BaseURL: getEnv("NOTIFICATION_BASE_URL", ""),
+			APIKey:  getEnv("NOTIFICATION_API_KEY", ""),
+		},
+	}, nil
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
