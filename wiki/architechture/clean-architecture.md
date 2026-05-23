@@ -66,6 +66,8 @@ Interfaces live in the layer that owns the abstraction or contract.
 go-clean-base/
 ├── main.go
 ├── go.mod / go.sum
+├── Makefile                # build / vet / test / lint targets
+├── .golangci.yml           # golangci-lint v2 config
 ├── .env.example / .gitignore
 │
 ├── cmd/
@@ -92,16 +94,19 @@ go-clean-base/
 │   │   ├── repository/
 │   │   │   ├── todo_repository.go        # ITodoRepository interface
 │   │   │   ├── audit_log_repository.go   # IAuditLogRepository interface
-│   │   │   └── mock/todo_repository_mock.go  # mock lives next to the interface it satisfies
+│   │   │   └── mock/
+│   │   │       ├── todo_repository_mock.go       # mock lives next to the interface it satisfies
+│   │   │       └── audit_log_repository_mock.go
 │   │   └── service/
 │   │       ├── notification_client.go  # INotificationClient interface
 │   │       └── s3_client.go            # IFileStorage interface (vendor-neutral name)
 │   │
 │   ├── usecase/
-│   │   ├── dto/todo_dto.go          # CreateTodoInput, UpdateTodoInput, ListTodoInput, TodoOutput
-│   │   ├── transaction.go           # ITransaction interface — owned by usecase, not domain
-│   │   ├── todo_usecase.go          # ITodoUsecase interface
-│   │   └── todo_usecase_impl.go     # imports domain only
+│   │   ├── dto/todo_dto.go              # CreateTodoInput, UpdateTodoInput, ListTodoInput, TodoOutput
+│   │   ├── transaction.go               # ITransaction interface — owned by usecase, not domain
+│   │   ├── todo_usecase.go              # ITodoUsecase interface
+│   │   ├── todo_usecase_impl.go         # imports domain only
+│   │   └── todo_usecase_impl_test.go    # unit tests — no DB, inline mocks
 │   │
 │   ├── infrastructure/
 │   │   ├── database/
@@ -464,9 +469,24 @@ Response: `{"error": {"code": 404, "message": "todo not found"}}`
 
 ## 6. Verification Checklist
 
-- [ ] `go build ./...` — no errors
-- [ ] `go vet ./...` — no warnings
-- [ ] `go test ./internal/usecase/...` — passes with mock repo
+Run all checks at once:
+
+```bash
+make check   # runs vet + test + lint
+```
+
+Or individually:
+
+```bash
+make build   # go build ./...
+make vet     # go vet ./...
+make test    # go test ./internal/... -v -race -count=1
+make lint    # golangci-lint run ./...
+```
+
+- [ ] `make build` — no errors
+- [ ] `make vet` — no warnings
+- [ ] `make test` — all usecase unit tests pass (no DB required)
 - [ ] `curl /health` — `200 {"status":"ok"}`
 - [ ] `curl -X POST /api/v1/todos` — `201`
 - [ ] `curl /api/v1/todos/:id` (missing) — `404` JSON error

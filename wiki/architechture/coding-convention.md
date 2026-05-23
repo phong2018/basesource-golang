@@ -11,7 +11,8 @@
 | Implementation file | `xxx_impl.go` | `todo_usecase_impl.go`, `todo_repository_impl.go` |
 | File names | `snake_case.go` | `todo_filter.go`, `notification_client.go` |
 | Constants file | `xxx_constant.go` | `todo_constant.go` |
-| Mock file | `xxx_mock.go` inside `mock/` | `todo_repository_mock.go` |
+| Mock file | `xxx_mock.go` inside `mock/` | `todo_repository_mock.go`, `audit_log_repository_mock.go` |
+| Test file | `xxx_test.go` next to the impl | `todo_usecase_impl_test.go` |
 
 ---
 
@@ -207,7 +208,46 @@ func (m *TodoRepositoryMock) GetByID(ctx context.Context, id uint) (*model.Todo,
 }
 ```
 
+Current mocks:
+- `todo_repository_mock.go` — satisfies `ITodoRepository`
+- `audit_log_repository_mock.go` — satisfies `IAuditLogRepository`
+
 **Why next to the interface, not the implementation:** `TodoRepositoryMock` mocks `ITodoRepository` (defined in `domain/repository/`), not `todoRepository` (the infra impl). Placing the mock next to the infra impl implies it mocks the impl, which is misleading.
+
+---
+
+## 12. Testing
+
+Usecase unit tests live in `internal/usecase/xxx_usecase_impl_test.go` (package `usecase_test`).
+
+- No real DB — `transactionMock` calls `fn(ctx)` directly (simulates commit)
+- Repository dependencies are inline mocks from `domain/repository/mock/`
+- All cross-cutting deps (`ITransaction`, `INotificationClient`) are inlined per test
+
+Run:
+
+```bash
+make test    # go test ./internal/... -v -race -count=1
+```
+
+---
+
+## 13. Linting
+
+Config lives in `.golangci.yml` (golangci-lint v2 format). Run via:
+
+```bash
+make lint    # golangci-lint run ./...
+make check   # vet + test + lint all at once
+```
+
+Enabled linters: `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`, `misspell`, `noctx`  
+Formatters: `gofmt` (simplify), `goimports`
+
+Key rules enforced:
+- All errors must be checked (`errcheck`) — including `defer x.Close()` → `defer func() { _ = x.Close() }()`
+- Use `XxxContext` variants for DB and HTTP calls (`noctx`)
+- No unused exports (`unused`), no typos (`misspell`)
 
 ---
 
