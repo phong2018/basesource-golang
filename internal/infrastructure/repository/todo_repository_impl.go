@@ -5,11 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/yourname/go-clean-base/internal/constant"
 	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	domainRepo "github.com/yourname/go-clean-base/internal/domain/repository"
 	"github.com/yourname/go-clean-base/internal/infrastructure/database"
-	"github.com/yourname/go-clean-base/pkg/apperror"
 )
 
 type todoRepository struct {
@@ -24,7 +22,7 @@ func (r *todoRepository) GetByID(ctx context.Context, id uint) (*domainModel.Tod
 	var todo domainModel.Todo
 	err := r.db.DB.GetContext(ctx, &todo, "SELECT * FROM todos WHERE id = ?", id)
 	if err == sql.ErrNoRows {
-		return nil, apperror.NotFound(constant.ErrMsgTodoNotFound)
+		return nil, domainModel.ErrTodoNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("GetByID: %w", err)

@@ -1,9 +1,11 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
+	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	"github.com/yourname/go-clean-base/pkg/apperror"
 )
 
@@ -24,11 +26,13 @@ func ErrorHandler() echo.MiddlewareFunc {
 				return nil
 			}
 			var appErr *apperror.AppError
-			switch e := err.(type) {
-			case *apperror.AppError:
-				appErr = e
+			switch {
+			case errors.As(err, &appErr):
+				// already an AppError
+			case errors.Is(err, domainModel.ErrTodoNotFound):
+				appErr = apperror.NotFound(err.Error())
 			default:
-				appErr = apperror.Internal(e)
+				appErr = apperror.Internal(err)
 			}
 			return c.JSON(appErr.Code, errorResponse{
 				Error: errorBody{Code: appErr.Code, Message: appErr.Message},

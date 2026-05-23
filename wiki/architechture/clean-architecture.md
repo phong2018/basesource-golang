@@ -78,13 +78,13 @@ go-clean-base/
 │
 ├── internal/
 │   ├── constant/
-│   │   ├── common.go       # cross-layer shared constants (DateFormat, Timezone)
-│   │   └── error.go        # sentinel error message strings used across layers
+│   │   └── common.go       # cross-layer shared constants (DateFormat, Timezone)
 │   │
 │   ├── domain/
 │   │   ├── model/
 │   │   │   ├── todo.go              # Entity — db: tags, lifecycle fields
 │   │   │   ├── todo_constant.go     # Domain Rule — MaxTitleLength = 255
+│   │   │   ├── todo_error.go        # Domain Errors — ErrTodoNotFound
 │   │   │   ├── todo_filter.go       # Value Object — query params for ITodoRepository.List
 │   │   │   ├── pagination.go        # Value Object — shared across repositories
 │   │   │   └── notification.go      # Value Object — used by INotificationClient.Send
@@ -301,6 +301,36 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 
 ### Error Handling
 
+Domain sentinel errors live in `domain/model/`:
+
+```go
+// Domain Errors: sentinel errors for the Todo entity.
+var ErrTodoNotFound = errors.New("todo not found")
+```
+
+Infrastructure returns domain sentinels — never `apperror` directly:
+
+```go
+if err == sql.ErrNoRows {
+    return nil, domainModel.ErrTodoNotFound
+}
+```
+
+The presentation middleware maps domain sentinels → HTTP codes via `errors.Is`:
+
+```go
+switch {
+case errors.As(err, &appErr):
+    // already an AppError — pass through
+case errors.Is(err, domainModel.ErrTodoNotFound):
+    appErr = apperror.NotFound(err.Error())   // → 404
+default:
+    appErr = apperror.Internal(err)           // → 500
+}
+```
+
+`AppError` is the wire type sent to the client:
+
 ```go
 type AppError struct {
     Code    int
@@ -309,7 +339,12 @@ type AppError struct {
 }
 ```
 
-Middleware catches `*AppError` → `{"error": {"code": 404, "message": "not found"}}`.
+Response: `{"error": {"code": 404, "message": "todo not found"}}`
+
+**Why sentinels instead of string constants:**
+- `errors.Is` supports wrapping — a sentinel survives `fmt.Errorf("...: %w", err)`
+- The domain owns the concept; infrastructure and presentation never need to agree on a string
+- Adding a new entity error requires only one line in `domain/model/xxx_error.go` and one `case` in middleware
 
 ---
 

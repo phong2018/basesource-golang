@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/yourname/go-clean-base/internal/constant"
 	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	domainRepo "github.com/yourname/go-clean-base/internal/domain/repository"
 	domainSvc "github.com/yourname/go-clean-base/internal/domain/service"
@@ -113,6 +112,3 @@ func mapToOutput(t *domainModel.Todo) *dto.TodoOutput {
 		UpdatedAt:   helper.FormatTime(t.UpdatedAt),
 	}
 }
-
-// ensure constant package is used
-var _ = constant.ErrMsgTodoNotFound
