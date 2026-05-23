@@ -163,6 +163,28 @@ curl "http://localhost:8080/api/v1/todos?done=false&search=buy&page=1&limit=10"
 | CLI | [Cobra](https://github.com/spf13/cobra) |
 | Config | [godotenv](https://github.com/joho/godotenv) |
 
+## Development
+
+### Run tests
+```bash
+make test
+# or
+go test ./internal/... -v -race
+```
+
+### Lint
+```bash
+# install golangci-lint (one-time)
+brew install golangci-lint
+
+make lint
+```
+
+### All checks
+```bash
+make check   # runs vet + test + lint
+```
+
 ## Environment Variables
 
 See [.env.example](.env.example) for all available configuration options.

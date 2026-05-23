@@ -49,7 +49,7 @@ func (c *notificationClient) Send(ctx context.Context, n *domainModel.Notificati
 	if err != nil {
 		return "", fmt.Errorf("send notification: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		slog.ErrorContext(ctx, "notification API error", "status", resp.StatusCode)

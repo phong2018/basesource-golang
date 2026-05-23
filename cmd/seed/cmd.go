@@ -20,7 +20,7 @@ func NewSeedCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer cl.Close()
+			defer func() { _ = cl.Close() }()
 			return seeds.Run(cl)
 		},
 	}

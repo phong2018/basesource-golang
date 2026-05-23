@@ -28,7 +28,7 @@ func NewAPICommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer c.DBClient.Close()
+			defer func() { _ = c.DBClient.Close() }()
 
 			server := apphttp.NewServer(apphttp.Dependencies{
 				TodoUsecase: c.TodoUsecase,
