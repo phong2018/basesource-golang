@@ -338,9 +338,15 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 }
 ```
 
-### Transaction Boundary
+### Transaction Boundary and Propagation
 
-`ITransaction` lives in `usecase/` — the only layer that controls business atomicity:
+Two separate concerns — **ownership** and **propagation** — are worth distinguishing clearly.
+
+#### Transaction Ownership ✅
+
+Transaction boundaries belong in the usecase layer. This is correct Clean Architecture: a transaction boundary is part of application workflow orchestration, not a domain rule or infrastructure detail.
+
+`ITransaction` lives in `usecase/` to make this explicit:
 
 ```go
 // usecase/transaction.go
@@ -349,33 +355,7 @@ type ITransaction interface {
 }
 ```
 
-`database.Client` implements it. The tx is stored in context so repositories pick it up automatically via `conn(ctx)` — no explicit tx passing needed:
-
-```go
-// infrastructure/database/transaction.go
-func (c *Client) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
-    tx, _ := c.DB.BeginTxx(ctx, nil)
-    if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
-        tx.Rollback()
-        return err
-    }
-    return tx.Commit()
-}
-```
-
-Every repository embeds `baseRepository` which provides `conn(ctx)`:
-
-```go
-// infrastructure/repository/base_repository.go
-func (b *baseRepository) conn(ctx context.Context) database.Querier {
-    if tx := database.TxFromContext(ctx); tx != nil {
-        return tx      // inside WithinTransaction
-    }
-    return b.db.DB     // normal call, no active tx
-}
-```
-
-Usage in usecase — wrap multi-step writes that must be atomic:
+`database.Client` implements it. The usecase starts and owns the transaction:
 
 ```go
 err := u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
@@ -387,6 +367,42 @@ err := u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
 })
 // notification runs AFTER commit — non-fatal, no rollback needed
 ```
+
+#### Transaction Propagation ⚠️ (tradeoff)
+
+The tx is propagated via `context.WithValue` — repositories resolve their DB connection from `ctx`:
+
+```go
+// infrastructure/database/transaction.go
+func (c *Client) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+    tx, _ := c.DB.BeginTxx(ctx, nil)
+    if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
+        _ = tx.Rollback()
+        return err
+    }
+    return tx.Commit()
+}
+```
+
+```go
+// infrastructure/repository/base_repository.go
+func (b *baseRepository) conn(ctx context.Context) database.Querier {
+    if tx := database.TxFromContext(ctx); tx != nil {
+        return tx      // inside WithinTransaction
+    }
+    return b.db.DB     // normal call, no active tx
+}
+```
+
+**The tradeoff:** repository behavior implicitly depends on whether a tx is present in `ctx`. The same `repo.Create(ctx, todo)` call uses either `*sqlx.DB` or `*sqlx.Tx` depending on context — this is less explicit than passing `tx` directly.
+
+| Approach | Pros | Cons |
+|---|---|---|
+| Context propagation (current) | no plumbing change to repo signatures | implicit — harder to see at a glance |
+| Explicit `repo.WithTx(tx)` | explicit dependency | every repo method needs a tx variant |
+| UnitOfWork pattern | most explicit | most boilerplate |
+
+Context propagation is the practical Go choice and widely used. The key rule to keep it safe:
 
 **Rules:**
 - `WithinTransaction` is only called from usecase — never from repository or presentation
