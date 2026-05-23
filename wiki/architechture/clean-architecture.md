@@ -268,9 +268,14 @@ type NotificationRequest struct {
     Subject string `json:"subject"`
     Body    string `json:"body"`
 }
+
+type NotificationResponse struct {
+    MessageID string `json:"message_id"`
+    Status    string `json:"status"`
+}
 ```
 
-**HTTP client** maps `model.Notification` → `dto.NotificationRequest` internally before HTTP POST.
+**HTTP client** maps `model.Notification` → `dto.NotificationRequest` internally before HTTP POST, and maps the response back via `dto.NotificationResponse`.
 
 ### Presentation Layer
 
@@ -287,18 +292,19 @@ type Dependencies struct {
 
 func NewServer(deps Dependencies) *echo.Echo {
     e := echo.New()
-    e.Use(middleware.RequestLogger(), middleware.ErrorHandler())
+    e.Use(middleware.ErrorHandler())
+    e.Use(middleware.RequestLogger())
 
     e.GET("/health", handler.NewHealthHandler().Check)
 
     v1 := e.Group("/api/v1")
-    todo := v1.Group("/todos")
+    todos := v1.Group("/todos")
     todoHandler := handler.NewTodoHandler(deps.TodoUsecase)
-    todo.GET("",        todoHandler.List)
-    todo.GET("/:id",    todoHandler.GetByID)
-    todo.POST("",       todoHandler.Create)
-    todo.PUT("/:id",    todoHandler.Update)
-    todo.DELETE("/:id", todoHandler.Delete)
+    todos.GET("",        todoHandler.List)
+    todos.GET("/:id",    todoHandler.GetByID)
+    todos.POST("",       todoHandler.Create)
+    todos.PUT("/:id",    todoHandler.Update)
+    todos.DELETE("/:id", todoHandler.Delete)
     return e
 }
 ```
