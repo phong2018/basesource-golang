@@ -21,7 +21,7 @@ type s3Client struct {
 	bucket string
 }
 
-func NewS3Client(ctx context.Context, cfg *config.Config) domainSvc.IS3Client {
+func NewS3Client(ctx context.Context, cfg *config.Config) domainSvc.IFileStorage {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.AWS.Region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
@@ -39,7 +39,7 @@ func NewS3Client(ctx context.Context, cfg *config.Config) domainSvc.IS3Client {
 	}
 }
 
-func (c *s3Client) Upload(ctx context.Context, key string, body io.Reader) error {
+func (c *s3Client) Save(ctx context.Context, key string, body io.Reader) error {
 	_, err := c.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -48,7 +48,7 @@ func (c *s3Client) Upload(ctx context.Context, key string, body io.Reader) error
 	return err
 }
 
-func (c *s3Client) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+func (c *s3Client) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	out, err := c.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -67,7 +67,7 @@ func (c *s3Client) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func (c *s3Client) GetPresignedURL(ctx context.Context, key string, expires time.Duration) (string, error) {
+func (c *s3Client) GetURL(ctx context.Context, key string, expires time.Duration) (string, error) {
 	presign := s3.NewPresignClient(c.client)
 	out, err := presign.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),

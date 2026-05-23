@@ -16,7 +16,7 @@ type Container struct {
 	Cfg                *config.Config
 	DBClient           *database.Client
 	NotificationClient service.INotificationClient
-	S3Client           service.IS3Client
+	S3Client           service.IFileStorage
 	TodoUsecase        usecase.ITodoUsecase
 }
 

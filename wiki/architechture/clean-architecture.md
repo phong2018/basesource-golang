@@ -16,12 +16,12 @@ Domain
   model/       — entities + value objects
   repository/  — ITodoRepository        (uses domain model types)
   service/     — INotificationClient    (uses domain model types)
-               — IS3Client              (uses stdlib primitives)
+               — IFileStorage           (uses stdlib primitives)
     ↑ all implemented by
 Infrastructure
   repository/  — TodoRepository (DB, sqlx)
   httpclient/  — NotificationClient  ──→ maps domain model → infrastructure/dto internally
-  s3/          — S3Client
+  s3/          — s3Client              (implements IFileStorage)
 ```
 
 **One rule: every layer only imports inward — never outward.**
@@ -43,7 +43,7 @@ Interfaces live in the layer that owns the abstraction or contract.
 | ----------------------- | ---------------------- | ---------------------------------------------------------------------------------- |
 | `ITodoRepository`     | `domain/repository/` | usecase consumes it — usecase depends on domain defining this contract            |
 | `INotificationClient` | `domain/service/`    | usecase consumes it — usecase depends on domain defining this contract            |
-| `IS3Client`           | `domain/service/`    | usecase consumes it — usecase depends on domain defining this contract            |
+| `IFileStorage`        | `domain/service/`    | usecase consumes it — named after business intent, not the S3 vendor              |
 | `ITodoUsecase`        | `usecase/`           | presentation consumes it — presentation depends on usecase defining this contract |
 
 **Why `ITodoUsecase` is NOT in `domain/`:** the usecase interface uses `usecase/dto` types (`CreateTodoInput`, `TodoOutput`). Moving it into domain would force domain to import `usecase/dto`, breaking the rule that domain imports stdlib only.
@@ -90,9 +90,12 @@ go-clean-base/
 │   │   │   └── notification.go      # Value Object — used by INotificationClient.Send
 │   │   ├── repository/
 │   │   │   └── todo_repository.go   # ITodoRepository interface
+│   │   ├── repository/
+│   │   │   ├── todo_repository.go   # ITodoRepository interface
+│   │   │   └── mock/todo_repository_mock.go  # mock lives next to the interface it satisfies
 │   │   └── service/
 │   │       ├── notification_client.go  # INotificationClient interface
-│   │       └── s3_client.go            # IS3Client interface
+│   │       └── s3_client.go            # IFileStorage interface (vendor-neutral name)
 │   │
 │   ├── usecase/
 │   │   ├── dto/todo_dto.go          # CreateTodoInput, UpdateTodoInput, ListTodoInput, TodoOutput
@@ -102,8 +105,7 @@ go-clean-base/
 │   ├── infrastructure/
 │   │   ├── database/database.go     # sqlx connection
 │   │   ├── repository/
-│   │   │   ├── todo_repository_impl.go     # implements ITodoRepository
-│   │   │   └── mocks/todo_repository_mock.go
+│   │   │   └── todo_repository_impl.go     # implements ITodoRepository
 │   │   ├── dto/notification_dto.go  # wire-format JSON — never leaks out of infrastructure
 │   │   ├── httpclient/notification_client.go  # implements INotificationClient
 │   │   └── s3/s3_client.go         # implements IS3Client
@@ -220,11 +222,13 @@ type INotificationClient interface {
     Send(ctx context.Context, n *model.Notification) (string, error)
 }
 
-type IS3Client interface {
-    Upload(ctx context.Context, key string, body io.Reader) error
-    Download(ctx context.Context, key string) (io.ReadCloser, error)
+// Named after business intent — not the S3 vendor.
+// Swap the infra impl (S3 → GCS) without touching domain or usecase.
+type IFileStorage interface {
+    Save(ctx context.Context, key string, body io.Reader) error
+    Get(ctx context.Context, key string) (io.ReadCloser, error)
     Delete(ctx context.Context, key string) error
-    GetPresignedURL(ctx context.Context, key string, expires time.Duration) (string, error)
+    GetURL(ctx context.Context, key string, expires time.Duration) (string, error)
 }
 ```
 
