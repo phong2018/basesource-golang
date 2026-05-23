@@ -26,16 +26,41 @@ Infrastructure
 
 **One rule: every layer only imports inward — never outward.**
 
-| Layer | Imports | Never imports |
-|---|---|---|
-| `domain` | stdlib only | anything else |
-| `usecase` | `domain` only | `infrastructure`, `presentation` |
-| `infrastructure` | `domain`, `infrastructure/dto` | `usecase` impl, `presentation` |
-| `presentation` | `usecase` interfaces, `container` | `infrastructure` directly |
+| Layer              | Imports                               | Never imports                        |
+| ------------------ | ------------------------------------- | ------------------------------------ |
+| `domain`         | stdlib only                           | anything else                        |
+| `usecase`        | `domain` only                       | `infrastructure`, `presentation` |
+| `infrastructure` | `domain`, `infrastructure/dto`    | `usecase` impl, `presentation`   |
+| `presentation`   | `usecase` interfaces, `container` | `infrastructure` directly          |
 
 ---
 
-## 2. Directory Structure
+## 2. Interface Placement
+
+Interfaces live in the layer that owns the abstraction or contract.
+
+| Interface               | Lives in               | Reason                                                                             |
+| ----------------------- | ---------------------- | ---------------------------------------------------------------------------------- |
+| `ITodoRepository`     | `domain/repository/` | usecase consumes it — usecase depends on domain defining this contract            |
+| `INotificationClient` | `domain/service/`    | usecase consumes it — usecase depends on domain defining this contract            |
+| `IS3Client`           | `domain/service/`    | usecase consumes it — usecase depends on domain defining this contract            |
+| `ITodoUsecase`        | `usecase/`           | presentation consumes it — presentation depends on usecase defining this contract |
+
+**Why `ITodoUsecase` is NOT in `domain/`:** the usecase interface uses `usecase/dto` types (`CreateTodoInput`, `TodoOutput`). Moving it into domain would force domain to import `usecase/dto`, breaking the rule that domain imports stdlib only.
+
+---
+
+## 3. DTO Placement
+
+| DTO                                         | Lives in                | Used by                                                                                         |
+| ------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `infrastructure/dto`                      | `infrastructure/dto/` | infrastructure only — never leaks out                                                          |
+| `usecase/dto`                             | `usecase/dto/`        | usecase and presentation                                                                        |
+| Entity, Value Object, Domain Rule Constants | `domain/model/`       | domain, usecase,**and infrastructure** (repository impl receives/returns `*model.Todo`) |
+
+---
+
+## 4. Directory Structure
 
 ```
 go-clean-base/
@@ -108,12 +133,12 @@ go-clean-base/
 
 ## 3. Types at Each Layer
 
-| Type | Location | `db:` tag | `json:` tag |
-|---|---|---|---|
-| Entity | `domain/model/todo.go` | ✅ | ❌ |
-| Value Object | `domain/model/todo_filter.go` | ❌ | ❌ |
-| Usecase DTO | `usecase/dto/todo_dto.go` | ❌ | ✅ |
-| Infra DTO | `infrastructure/dto/notification_dto.go` | ❌ | ✅ |
+| Type         | Location                                   | `db:` tag | `json:` tag |
+| ------------ | ------------------------------------------ | ----------- | ------------- |
+| Entity       | `domain/model/todo.go`                   | ✅          | ❌            |
+| Value Object | `domain/model/todo_filter.go`            | ❌          | ❌            |
+| Usecase DTO  | `usecase/dto/todo_dto.go`                | ❌          | ✅            |
+| Infra DTO    | `infrastructure/dto/notification_dto.go` | ❌          | ✅            |
 
 **Rule for domain interface signatures:** any type in a `domain/repository/` or `domain/service/` method signature must live in `domain/model/`.
 
@@ -164,6 +189,7 @@ INotificationClient.Send(ctx, *model.Notification)
 ### Domain Layer
 
 **Entity** (`domain/model/todo.go`)
+
 ```go
 type Todo struct {
     ID          uint      `db:"id"`
@@ -176,6 +202,7 @@ type Todo struct {
 ```
 
 **Repository interface** (`domain/repository/todo_repository.go`)
+
 ```go
 type ITodoRepository interface {
     GetByID(ctx context.Context, id uint) (*model.Todo, error)
@@ -187,6 +214,7 @@ type ITodoRepository interface {
 ```
 
 **Service interfaces** (`domain/service/`)
+
 ```go
 type INotificationClient interface {
     Send(ctx context.Context, n *model.Notification) (string, error)
@@ -203,6 +231,7 @@ type IS3Client interface {
 ### Usecase Layer
 
 **Interface** (`usecase/todo_usecase.go`)
+
 ```go
 type ITodoUsecase interface {
     GetByID(ctx context.Context, id uint) (*dto.TodoOutput, error)
@@ -214,6 +243,7 @@ type ITodoUsecase interface {
 ```
 
 **Impl** (`usecase/todo_usecase_impl.go`)
+
 - Maps `dto.ListTodoInput` → `model.TodoFilter` + `model.Pagination` before calling repo
 - Maps `dto.CreateTodoInput` → `model.Todo` → result → `dto.TodoOutput`
 - Sends notification post-create (non-fatal — log error, do not fail the request)
@@ -221,6 +251,7 @@ type ITodoUsecase interface {
 ### Infrastructure Layer
 
 **Infra DTO** (`infrastructure/dto/notification_dto.go`) — wire-format only, never leaks out
+
 ```go
 type NotificationRequest struct {
     To      string `json:"to"`
@@ -234,6 +265,7 @@ type NotificationRequest struct {
 ### Presentation Layer
 
 **Server** (`presentation/http/server.go`)
+
 ```go
 func NewServer(c *container.Container) *echo.Echo {
     e := echo.New()

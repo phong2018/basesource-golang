@@ -1,0 +1,11 @@
+
+I. about interface 
+1. interface of infrastrucure (repository, httpclient, s3) place in domain/repository, domain/service
+because these interface using by usecase (usecase depend on domain)
+2. interface of usecase place in same folder usecase
+because these interface using by presentation (presentation depend on usecase)
+
+II. about dto
+1. dto of infrastructure only use in infrastructure layer
+2. dto in usecase can use in usecase and presentation layer
+3. entities, Value Object, Domain Rule Constants use in domain and usecase
