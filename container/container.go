@@ -26,10 +26,11 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		return nil, err
 	}
 
-	todoRepo    := infraRepo.NewTodoRepository(db)
-	notifier    := httpclient.NewNotificationClient(cfg)
-	s3          := s3client.NewS3Client(ctx, cfg)
-	todoUsecase := usecase.NewTodoUsecase(todoRepo, notifier)
+	todoRepo        := infraRepo.NewTodoRepository(db)
+	auditLogRepo    := infraRepo.NewAuditLogRepository(db)
+	notifier        := httpclient.NewNotificationClient(cfg)
+	s3              := s3client.NewS3Client(ctx, cfg)
+	todoUsecase     := usecase.NewTodoUsecase(todoRepo, auditLogRepo, db, notifier)
 
 	return &Container{
 		Cfg:                cfg,

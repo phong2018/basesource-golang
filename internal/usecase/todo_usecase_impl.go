@@ -13,12 +13,19 @@ import (
 )
 
 type todoUsecase struct {
-	repo     domainRepo.ITodoRepository
-	notifier domainSvc.INotificationClient
+	repo         domainRepo.ITodoRepository
+	auditLogRepo domainRepo.IAuditLogRepository
+	tx           ITransaction
+	notifier     domainSvc.INotificationClient
 }
 
-func NewTodoUsecase(repo domainRepo.ITodoRepository, notifier domainSvc.INotificationClient) ITodoUsecase {
-	return &todoUsecase{repo: repo, notifier: notifier}
+func NewTodoUsecase(
+	repo domainRepo.ITodoRepository,
+	auditLogRepo domainRepo.IAuditLogRepository,
+	tx ITransaction,
+	notifier domainSvc.INotificationClient,
+) ITodoUsecase {
+	return &todoUsecase{repo: repo, auditLogRepo: auditLogRepo, tx: tx, notifier: notifier}
 }
 
 func (u *todoUsecase) GetByID(ctx context.Context, id uint) (*dto.TodoOutput, error) {
@@ -52,16 +59,30 @@ func (u *todoUsecase) List(ctx context.Context, input dto.ListTodoInput) ([]*dto
 }
 
 func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*dto.TodoOutput, error) {
-	todo := &domainModel.Todo{
-		Title:       input.Title,
-		Description: input.Description,
-	}
-	created, err := u.repo.Create(ctx, todo)
+	var created *domainModel.Todo
+
+	err := u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		todo := &domainModel.Todo{
+			Title:       input.Title,
+			Description: input.Description,
+		}
+		var err error
+		created, err = u.repo.Create(ctx, todo)
+		if err != nil {
+			return err
+		}
+		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+			Entity:   "todo",
+			EntityID: created.ID,
+			Action:   domainModel.AuditActionCreate,
+		})
+	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Create failed", "error", err)
 		return nil, apperror.Internal(err)
 	}
-	// notify after creation
+
+	// notification runs after commit — non-fatal, no rollback needed
 	n := &domainModel.Notification{
 		To:      "admin@example.com",
 		Subject: "New Todo Created",
@@ -69,7 +90,6 @@ func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*d
 	}
 	if _, err := u.notifier.Send(ctx, n); err != nil {
 		slog.ErrorContext(ctx, "notification send failed", "error", err)
-		// non-fatal — do not fail the request
 	}
 	return mapToOutput(created), nil
 }
@@ -79,11 +99,25 @@ func (u *todoUsecase) Update(ctx context.Context, input dto.UpdateTodoInput) (*d
 	if err != nil {
 		return nil, err
 	}
-	existing.Title = input.Title
-	existing.Description = input.Description
-	existing.Done = input.Done
 
-	updated, err := u.repo.Update(ctx, existing)
+	var updated *domainModel.Todo
+
+	err = u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		existing.Title = input.Title
+		existing.Description = input.Description
+		existing.Done = input.Done
+
+		var err error
+		updated, err = u.repo.Update(ctx, existing)
+		if err != nil {
+			return err
+		}
+		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+			Entity:   "todo",
+			EntityID: updated.ID,
+			Action:   domainModel.AuditActionUpdate,
+		})
+	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Update failed", "error", err, "id", input.ID)
 		return nil, apperror.Internal(err)
@@ -95,7 +129,18 @@ func (u *todoUsecase) Delete(ctx context.Context, id uint) error {
 	if _, err := u.repo.GetByID(ctx, id); err != nil {
 		return err
 	}
-	if err := u.repo.Delete(ctx, id); err != nil {
+
+	err := u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		if err := u.repo.Delete(ctx, id); err != nil {
+			return err
+		}
+		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+			Entity:   "todo",
+			EntityID: id,
+			Action:   domainModel.AuditActionDelete,
+		})
+	})
+	if err != nil {
 		slog.ErrorContext(ctx, "Delete failed", "error", err, "id", id)
 		return apperror.Internal(err)
 	}

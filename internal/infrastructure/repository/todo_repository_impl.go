@@ -11,16 +11,16 @@ import (
 )
 
 type todoRepository struct {
-	db *database.Client
+	baseRepository
 }
 
 func NewTodoRepository(db *database.Client) domainRepo.ITodoRepository {
-	return &todoRepository{db: db}
+	return &todoRepository{baseRepository{db: db}}
 }
 
 func (r *todoRepository) GetByID(ctx context.Context, id uint) (*domainModel.Todo, error) {
 	var todo domainModel.Todo
-	err := r.db.DB.GetContext(ctx, &todo, "SELECT * FROM todos WHERE id = ?", id)
+	err := r.conn(ctx).GetContext(ctx, &todo, "SELECT * FROM todos WHERE id = ?", id)
 	if err == sql.ErrNoRows {
 		return nil, domainModel.ErrTodoNotFound
 	}
@@ -46,14 +46,14 @@ func (r *todoRepository) List(ctx context.Context, filter domainModel.TodoFilter
 	args = append(args, page.Limit, page.Offset())
 
 	var todos []*domainModel.Todo
-	if err := r.db.DB.SelectContext(ctx, &todos, query, args...); err != nil {
+	if err := r.conn(ctx).SelectContext(ctx, &todos, query, args...); err != nil {
 		return nil, fmt.Errorf("List: %w", err)
 	}
 	return todos, nil
 }
 
 func (r *todoRepository) Create(ctx context.Context, todo *domainModel.Todo) (*domainModel.Todo, error) {
-	res, err := r.db.DB.ExecContext(ctx,
+	res, err := r.conn(ctx).ExecContext(ctx,
 		"INSERT INTO todos (title, description, done) VALUES (?, ?, ?)",
 		todo.Title, todo.Description, todo.Done,
 	)
@@ -68,7 +68,7 @@ func (r *todoRepository) Create(ctx context.Context, todo *domainModel.Todo) (*d
 }
 
 func (r *todoRepository) Update(ctx context.Context, todo *domainModel.Todo) (*domainModel.Todo, error) {
-	_, err := r.db.DB.ExecContext(ctx,
+	_, err := r.conn(ctx).ExecContext(ctx,
 		"UPDATE todos SET title=?, description=?, done=? WHERE id=?",
 		todo.Title, todo.Description, todo.Done, todo.ID,
 	)
@@ -79,7 +79,7 @@ func (r *todoRepository) Update(ctx context.Context, todo *domainModel.Todo) (*d
 }
 
 func (r *todoRepository) Delete(ctx context.Context, id uint) error {
-	_, err := r.db.DB.ExecContext(ctx, "DELETE FROM todos WHERE id=?", id)
+	_, err := r.conn(ctx).ExecContext(ctx, "DELETE FROM todos WHERE id=?", id)
 	if err != nil {
 		return fmt.Errorf("Delete: %w", err)
 	}

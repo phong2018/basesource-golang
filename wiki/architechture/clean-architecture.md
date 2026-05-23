@@ -87,11 +87,11 @@ go-clean-base/
 │   │   │   ├── todo_error.go        # Domain Errors — ErrTodoNotFound
 │   │   │   ├── todo_filter.go       # Value Object — query params for ITodoRepository.List
 │   │   │   ├── pagination.go        # Value Object — shared across repositories
-│   │   │   └── notification.go      # Value Object — used by INotificationClient.Send
+│   │   │   ├── notification.go      # Value Object — used by INotificationClient.Send
+│   │   │   └── audit_log.go         # Entity + Domain Rule Constants — AuditLog, action consts
 │   │   ├── repository/
-│   │   │   └── todo_repository.go   # ITodoRepository interface
-│   │   ├── repository/
-│   │   │   ├── todo_repository.go   # ITodoRepository interface
+│   │   │   ├── todo_repository.go        # ITodoRepository interface
+│   │   │   ├── audit_log_repository.go   # IAuditLogRepository interface
 │   │   │   └── mock/todo_repository_mock.go  # mock lives next to the interface it satisfies
 │   │   └── service/
 │   │       ├── notification_client.go  # INotificationClient interface
@@ -99,16 +99,21 @@ go-clean-base/
 │   │
 │   ├── usecase/
 │   │   ├── dto/todo_dto.go          # CreateTodoInput, UpdateTodoInput, ListTodoInput, TodoOutput
+│   │   ├── transaction.go           # ITransaction interface — owned by usecase, not domain
 │   │   ├── todo_usecase.go          # ITodoUsecase interface
 │   │   └── todo_usecase_impl.go     # imports domain only
 │   │
 │   ├── infrastructure/
-│   │   ├── database/database.go     # sqlx connection
+│   │   ├── database/
+│   │   │   ├── database.go          # sqlx connection
+│   │   │   └── transaction.go       # WithinTransaction impl + TxFromContext + Querier interface
 │   │   ├── repository/
-│   │   │   └── todo_repository_impl.go     # implements ITodoRepository
+│   │   │   ├── base_repository.go        # baseRepository — shared conn(ctx) for tx-aware queries
+│   │   │   ├── todo_repository_impl.go   # implements ITodoRepository
+│   │   │   └── audit_log_repository_impl.go  # implements IAuditLogRepository
 │   │   ├── dto/notification_dto.go  # wire-format JSON — never leaks out of infrastructure
 │   │   ├── httpclient/notification_client.go  # implements INotificationClient
-│   │   └── s3/s3_client.go         # implements IS3Client
+│   │   └── s3/s3_client.go         # implements IFileStorage
 │   │
 │   └── presentation/http/
 │       ├── server.go
@@ -250,7 +255,8 @@ type ITodoUsecase interface {
 
 - Maps `dto.ListTodoInput` → `model.TodoFilter` + `model.Pagination` before calling repo
 - Maps `dto.CreateTodoInput` → `model.Todo` → result → `dto.TodoOutput`
-- Sends notification post-create (non-fatal — log error, do not fail the request)
+- `Create`, `Update`, `Delete` wrap their writes in `u.tx.WithinTransaction` — todo write + audit log are atomic
+- Sends notification post-create outside the transaction (non-fatal — log error, do not fail the request)
 
 ### Infrastructure Layer
 
@@ -294,14 +300,74 @@ Handler is a thin layer: bind → validate → call usecase → return JSON. No 
 
 ```go
 func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
-    db          := database.NewClient(cfg)
-    todoRepo    := infraRepo.NewTodoRepository(db)
-    notifier    := httpclient.NewNotificationClient(cfg)
-    s3          := s3client.NewS3Client(ctx, cfg)   // ctx needed by aws-sdk-go-v2
-    todoUsecase := usecase.NewTodoUsecase(todoRepo, notifier)
+    db              := database.NewClient(cfg)
+    todoRepo        := infraRepo.NewTodoRepository(db)
+    auditLogRepo    := infraRepo.NewAuditLogRepository(db)
+    notifier        := httpclient.NewNotificationClient(cfg)
+    s3              := s3client.NewS3Client(ctx, cfg)   // ctx needed by aws-sdk-go-v2
+    todoUsecase     := usecase.NewTodoUsecase(todoRepo, auditLogRepo, db, notifier)
     return &Container{...}, nil
 }
 ```
+
+### Transaction Boundary
+
+`ITransaction` lives in `usecase/` — the only layer that controls business atomicity:
+
+```go
+// usecase/transaction.go
+type ITransaction interface {
+    WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error
+}
+```
+
+`database.Client` implements it. The tx is stored in context so repositories pick it up automatically via `conn(ctx)` — no explicit tx passing needed:
+
+```go
+// infrastructure/database/transaction.go
+func (c *Client) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+    tx, _ := c.DB.BeginTxx(ctx, nil)
+    if err := fn(context.WithValue(ctx, txKey{}, tx)); err != nil {
+        tx.Rollback()
+        return err
+    }
+    return tx.Commit()
+}
+```
+
+Every repository embeds `baseRepository` which provides `conn(ctx)`:
+
+```go
+// infrastructure/repository/base_repository.go
+func (b *baseRepository) conn(ctx context.Context) database.Querier {
+    if tx := database.TxFromContext(ctx); tx != nil {
+        return tx      // inside WithinTransaction
+    }
+    return b.db.DB     // normal call, no active tx
+}
+```
+
+Usage in usecase — wrap multi-step writes that must be atomic:
+
+```go
+err := u.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+    created, err = u.repo.Create(ctx, todo)        // INSERT todos   ┐ same tx
+    if err != nil { return err }                                    // │
+    return u.auditLogRepo.Create(ctx, &AuditLog{   // INSERT audit   ┘
+        Entity: "todo", EntityID: created.ID, Action: AuditActionCreate,
+    })
+})
+// notification runs AFTER commit — non-fatal, no rollback needed
+```
+
+**Rules:**
+- `WithinTransaction` is only called from usecase — never from repository or presentation
+- Reads (`GetByID`, `List`) do not need a transaction
+- Anything that must not roll back (e.g. sending a notification) runs outside `WithinTransaction`
+
+See [transaction-test-guide.md](transaction-test-guide.md) for verified commit and rollback test steps.
+
+---
 
 ### Error Handling
 
@@ -366,5 +432,7 @@ Response: `{"error": {"code": 404, "message": "todo not found"}}`
 - [ ] `grep -r "infrastructure" internal/domain/` — zero results
 - [ ] `grep -r "infrastructure" internal/usecase/` — zero results
 - [ ] `docker compose up` — app + mysql start, `/health` reachable
-- [ ] `go run main.go migrate` — todos table created
+- [ ] `go run main.go migrate` — todos + audit_logs tables created
 - [ ] `go run main.go seed` — fixture rows inserted
+- [ ] `POST /api/v1/todos` → audit_logs has matching `create` row (same transaction)
+- [ ] Drop `audit_logs` mid-run → `POST /api/v1/todos` returns 500, no orphan row in todos (rollback)
