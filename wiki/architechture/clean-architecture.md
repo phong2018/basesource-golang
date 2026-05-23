@@ -31,7 +31,7 @@ Infrastructure
 | `domain`         | stdlib only                           | anything else                        |
 | `usecase`        | `domain` only                       | `infrastructure`, `presentation` |
 | `infrastructure` | `domain`, `infrastructure/dto`    | `usecase` impl, `presentation`   |
-| `presentation`   | `usecase` interfaces, `container` | `infrastructure` directly          |
+| `presentation`   | `usecase` interfaces only         | `infrastructure`, `container`      |
 
 ---
 
@@ -276,25 +276,47 @@ type NotificationRequest struct {
 
 **Server** (`presentation/http/server.go`)
 
+`NewServer` receives a `Dependencies` struct — never the container directly. Adding a new usecase only requires adding a field to `Dependencies`; the function signature stays stable.
+
 ```go
-func NewServer(c *container.Container) *echo.Echo {
+// Dependencies holds all usecase interfaces injected into the HTTP server.
+// Add new usecases here without changing the NewServer signature.
+type Dependencies struct {
+    TodoUsecase usecase.ITodoUsecase
+}
+
+func NewServer(deps Dependencies) *echo.Echo {
     e := echo.New()
-    e.Use(middleware.Logger(), middleware.ErrorHandler())
+    e.Use(middleware.RequestLogger(), middleware.ErrorHandler())
 
     e.GET("/health", handler.NewHealthHandler().Check)
 
     v1 := e.Group("/api/v1")
     todo := v1.Group("/todos")
-    todo.GET("",        h.List)
-    todo.GET("/:id",    h.GetByID)
-    todo.POST("",       h.Create)
-    todo.PUT("/:id",    h.Update)
-    todo.DELETE("/:id", h.Delete)
+    todoHandler := handler.NewTodoHandler(deps.TodoUsecase)
+    todo.GET("",        todoHandler.List)
+    todo.GET("/:id",    todoHandler.GetByID)
+    todo.POST("",       todoHandler.Create)
+    todo.PUT("/:id",    todoHandler.Update)
+    todo.DELETE("/:id", todoHandler.Delete)
     return e
 }
 ```
 
+`cmd/api/cmd.go` builds the container and passes only what presentation needs:
+
+```go
+c, _ := container.NewContainer(ctx, cfg)
+server := apphttp.NewServer(apphttp.Dependencies{
+    TodoUsecase: c.TodoUsecase,
+})
+```
+
 Handler is a thin layer: bind → validate → call usecase → return JSON. No business logic.
+
+**Why not pass `*container.Container` directly:**
+- `presentation → container` pulls in all of infrastructure as a transitive dependency
+- `Dependencies` is a stable, minimal interface — presentation only knows about usecase interfaces it actually uses
 
 ### DI Container
 
