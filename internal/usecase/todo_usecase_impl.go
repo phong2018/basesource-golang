@@ -2,8 +2,11 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
 	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	domainRepo "github.com/yourname/go-clean-base/internal/domain/repository"
 	domainSvc "github.com/yourname/go-clean-base/internal/domain/service"
@@ -15,6 +18,7 @@ import (
 type todoUsecase struct {
 	repo         domainRepo.ITodoRepository
 	auditLogRepo domainRepo.IAuditLogRepository
+	outboxRepo   domainRepo.IOutboxRepository
 	tx           ITransaction
 	notifier     domainSvc.INotificationClient
 }
@@ -22,10 +26,11 @@ type todoUsecase struct {
 func NewTodoUsecase(
 	repo domainRepo.ITodoRepository,
 	auditLogRepo domainRepo.IAuditLogRepository,
+	outboxRepo domainRepo.IOutboxRepository,
 	tx ITransaction,
 	notifier domainSvc.INotificationClient,
 ) ITodoUsecase {
-	return &todoUsecase{repo: repo, auditLogRepo: auditLogRepo, tx: tx, notifier: notifier}
+	return &todoUsecase{repo: repo, auditLogRepo: auditLogRepo, outboxRepo: outboxRepo, tx: tx, notifier: notifier}
 }
 
 func (u *todoUsecase) GetByID(ctx context.Context, id uint) (*dto.TodoOutput, error) {
@@ -71,11 +76,14 @@ func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*d
 		if err != nil {
 			return err
 		}
-		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+		if err := u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
 			Entity:   "todo",
 			EntityID: created.ID,
 			Action:   domainModel.AuditActionCreate,
-		})
+		}); err != nil {
+			return err
+		}
+		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoCreated, fmt.Sprint(created.ID), created))
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Create failed", "error", err)
@@ -112,11 +120,14 @@ func (u *todoUsecase) Update(ctx context.Context, input dto.UpdateTodoInput) (*d
 		if err != nil {
 			return err
 		}
-		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+		if err := u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
 			Entity:   "todo",
 			EntityID: updated.ID,
 			Action:   domainModel.AuditActionUpdate,
-		})
+		}); err != nil {
+			return err
+		}
+		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoUpdated, fmt.Sprint(updated.ID), updated))
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Update failed", "error", err, "id", input.ID)
@@ -134,17 +145,30 @@ func (u *todoUsecase) Delete(ctx context.Context, id uint) error {
 		if err := u.repo.Delete(ctx, id); err != nil {
 			return err
 		}
-		return u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
+		if err := u.auditLogRepo.Create(ctx, &domainModel.AuditLog{
 			Entity:   "todo",
 			EntityID: id,
 			Action:   domainModel.AuditActionDelete,
-		})
+		}); err != nil {
+			return err
+		}
+		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoDeleted, fmt.Sprint(id), map[string]any{"id": id}))
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Delete failed", "error", err, "id", id)
 		return apperror.Internal(err)
 	}
 	return nil
+}
+
+func buildOutboxEvent(eventType, aggregateID string, payload any) *domainModel.OutboxEvent {
+	body, _ := json.Marshal(payload)
+	return &domainModel.OutboxEvent{
+		EventID:     uuid.NewString(),
+		EventType:   eventType,
+		AggregateID: aggregateID,
+		Payload:     string(body),
+	}
 }
 
 func mapToOutput(t *domainModel.Todo) *dto.TodoOutput {

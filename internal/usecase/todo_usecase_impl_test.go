@@ -41,7 +41,7 @@ func newUsecase(
 	todoRepo *repoMock.TodoRepositoryMock,
 	auditRepo *repoMock.AuditLogRepositoryMock,
 ) usecase.ITodoUsecase {
-	return usecase.NewTodoUsecase(todoRepo, auditRepo, &transactionMock{}, &notifierMock{})
+	return usecase.NewTodoUsecase(todoRepo, auditRepo, &repoMock.OutboxRepositoryMock{}, &transactionMock{}, &notifierMock{})
 }
 
 // ── GetByID ──────────────────────────────────────────────────────────────────

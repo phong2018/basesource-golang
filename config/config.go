@@ -6,10 +6,11 @@ import (
 )
 
 type Config struct {
-	AppPort  string
-	Database DatabaseConfig
-	AWS      AWSConfig
+	AppPort      string
+	Database     DatabaseConfig
+	AWS          AWSConfig
 	Notification NotificationConfig
+	Messaging    MessagingConfig
 }
 
 type DatabaseConfig struct {
@@ -28,6 +29,12 @@ type NotificationConfig struct {
 	APIKey  string
 }
 
+type MessagingConfig struct {
+	RabbitMQURL   string
+	Exchange      string
+	PrefetchCount int
+}
+
 func NewConfig() (*Config, error) {
 	_ = godotenv.Load()
 	return &Config{
@@ -44,6 +51,11 @@ func NewConfig() (*Config, error) {
 		Notification: NotificationConfig{
 			BaseURL: getEnv("NOTIFICATION_BASE_URL", ""),
 			APIKey:  getEnv("NOTIFICATION_API_KEY", ""),
+		},
+		Messaging: MessagingConfig{
+			RabbitMQURL:   getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			Exchange:      getEnv("RABBITMQ_EXCHANGE", "todo.events"),
+			PrefetchCount: 1,
 		},
 	}, nil
 }
