@@ -2,14 +2,17 @@ package config
 
 import (
 	"os"
+	"strings"
+
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
-	AppPort  string
-	Database DatabaseConfig
-	AWS      AWSConfig
+	AppPort      string
+	Database     DatabaseConfig
+	AWS          AWSConfig
 	Notification NotificationConfig
+	Messaging    MessagingConfig
 }
 
 type DatabaseConfig struct {
@@ -28,6 +31,18 @@ type NotificationConfig struct {
 	APIKey  string
 }
 
+type MessagingConfig struct {
+	// RabbitMQ — notification task queue
+	RabbitMQURL           string
+	RabbitMQExchange      string
+	RabbitMQPrefetchCount int
+
+	// Kafka — domain event streaming
+	KafkaBrokers []string
+	KafkaTopic   string
+	KafkaGroupID string
+}
+
 func NewConfig() (*Config, error) {
 	_ = godotenv.Load()
 	return &Config{
@@ -44,6 +59,14 @@ func NewConfig() (*Config, error) {
 		Notification: NotificationConfig{
 			BaseURL: getEnv("NOTIFICATION_BASE_URL", ""),
 			APIKey:  getEnv("NOTIFICATION_API_KEY", ""),
+		},
+		Messaging: MessagingConfig{
+			RabbitMQURL:           getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			RabbitMQExchange:      getEnv("RABBITMQ_EXCHANGE", "todo.events"),
+			RabbitMQPrefetchCount: 1,
+			KafkaBrokers:          strings.Split(getEnv("KAFKA_BROKERS", "localhost:9092"), ","),
+			KafkaTopic:            getEnv("KAFKA_TOPIC", "todo-events"),
+			KafkaGroupID:          getEnv("KAFKA_GROUP_ID", "todo-worker"),
 		},
 	}, nil
 }
