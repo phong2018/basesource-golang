@@ -16,29 +16,26 @@ import (
 )
 
 type todoUsecase struct {
-	repo           domainRepo.ITodoRepository
-	auditLogRepo   domainRepo.IAuditLogRepository
-	outboxRepo     domainRepo.IOutboxRepository
-	tx             ITransaction
-	notifier       domainSvc.INotificationClient
-	notifPublisher domainSvc.INotificationPublisher
+	repo         domainRepo.ITodoRepository
+	auditLogRepo domainRepo.IAuditLogRepository
+	outboxRepo   domainRepo.IOutboxRepository
+	tx           ITransaction
+	notifier     domainSvc.INotificationClient
 }
 
 func NewTodoUsecase(
-	repo           domainRepo.ITodoRepository,
-	auditLogRepo   domainRepo.IAuditLogRepository,
-	outboxRepo     domainRepo.IOutboxRepository,
-	tx             ITransaction,
-	notifier       domainSvc.INotificationClient,
-	notifPublisher domainSvc.INotificationPublisher,
+	repo         domainRepo.ITodoRepository,
+	auditLogRepo domainRepo.IAuditLogRepository,
+	outboxRepo   domainRepo.IOutboxRepository,
+	tx           ITransaction,
+	notifier     domainSvc.INotificationClient,
 ) ITodoUsecase {
 	return &todoUsecase{
-		repo:           repo,
-		auditLogRepo:   auditLogRepo,
-		outboxRepo:     outboxRepo,
-		tx:             tx,
-		notifier:       notifier,
-		notifPublisher: notifPublisher,
+		repo:         repo,
+		auditLogRepo: auditLogRepo,
+		outboxRepo:   outboxRepo,
+		tx:           tx,
+		notifier:     notifier,
 	}
 }
 
@@ -99,15 +96,6 @@ func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*d
 		return nil, apperror.Internal(err)
 	}
 
-	// push notification task to RabbitMQ after commit — non-fatal, no rollback needed
-	n := &domainModel.Notification{
-		To:      "admin@example.com",
-		Subject: "New Todo Created",
-		Body:    "Todo: " + created.Title,
-	}
-	if err := u.notifPublisher.PublishNotification(ctx, n); err != nil {
-		slog.ErrorContext(ctx, "notification publish failed", "error", err)
-	}
 	return mapToOutput(created), nil
 }
 

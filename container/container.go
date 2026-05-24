@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/go-clean-base/internal/infrastructure/messaging"
 	infraRepo "github.com/yourname/go-clean-base/internal/infrastructure/repository"
 	s3client "github.com/yourname/go-clean-base/internal/infrastructure/s3"
+	workerPresentation "github.com/yourname/go-clean-base/internal/presentation/worker"
 	"github.com/yourname/go-clean-base/internal/usecase"
 )
 
@@ -30,6 +31,9 @@ type Container struct {
 
 	// Outbox relay — polls DB outbox_events and forwards to Kafka
 	OutboxRelay *messaging.OutboxRelay
+
+	// Domain event handler — processes Kafka events and publishes downstream tasks
+	DomainEventHandler *workerPresentation.DomainEventHandler
 
 	// External services
 	NotificationClient service.INotificationClient
@@ -75,9 +79,12 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	// ── Object storage ───────────────────────────────────────────────────────
 	s3 := s3client.NewS3Client(ctx, cfg)
 
+	// ── Domain event handler ─────────────────────────────────────────────────
+	domainEventHandler := workerPresentation.NewDomainEventHandler(rmqNotifPublisher)
+
 	// ── Usecase layer ────────────────────────────────────────────────────────
 	todoUsecase := usecase.NewTodoUsecase(
-		todoRepo, auditLogRepo, outboxRepo, db, notifier, rmqNotifPublisher,
+		todoRepo, auditLogRepo, outboxRepo, db, notifier,
 	)
 
 	return &Container{
@@ -90,6 +97,8 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		KafkaProducer: kafkaProducer,
 		KafkaConsumer: kafkaConsumer,
 		OutboxRelay:   kafkaOutboxRelay,
+
+		DomainEventHandler: domainEventHandler,
 
 		NotificationClient: notifier,
 		S3Client:           s3,

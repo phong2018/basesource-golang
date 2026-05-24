@@ -58,6 +58,7 @@ wait_for_db_status() {
 # ── step 1: create a fresh todo for this test ────────────────────────────────
 echo ""
 echo "--- Step 1: POST /api/v1/todos (setup)"
+PRE_SETUP=$(grep -c "notification task received" "$WORKER_LOG" 2>/dev/null || true)
 RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API/api/v1/todos" \
   -H "Content-Type: application/json" \
   -d '{"title":"Test-02 Kafka update"}')
@@ -67,7 +68,13 @@ HTTP_CODE=$(echo "$RESP" | grep "HTTP_STATUS:" | cut -d: -f2)
 TODO_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
 [ -n "$TODO_ID" ] && pass "todo id=$TODO_ID" || fail "could not extract id from: $BODY"
 
-# snapshot notification count before update
+# wait for the setup notification to drain before snapshotting NOTIF_BEFORE
+for i in $(seq 1 15); do
+  CNT=$(grep -c "notification task received" "$WORKER_LOG" 2>/dev/null || true)
+  [ "$CNT" -gt "$PRE_SETUP" ] && break
+  [ $i -eq 15 ] && fail "setup (create) notification never arrived within 15s"
+  sleep 1
+done
 NOTIF_BEFORE=$(grep -c "notification task received" "$WORKER_LOG" 2>/dev/null || true)
 
 # ── step 2: PUT todo ─────────────────────────────────────────────────────────

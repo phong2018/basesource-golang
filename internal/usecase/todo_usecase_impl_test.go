@@ -8,7 +8,6 @@ import (
 
 	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	repoMock "github.com/yourname/go-clean-base/internal/domain/repository/mock"
-	serviceMock "github.com/yourname/go-clean-base/internal/domain/service/mock"
 	"github.com/yourname/go-clean-base/internal/usecase"
 	"github.com/yourname/go-clean-base/internal/usecase/dto"
 	"github.com/yourname/go-clean-base/pkg/apperror"
@@ -48,7 +47,6 @@ func newUsecase(
 		&repoMock.OutboxRepositoryMock{},
 		&transactionMock{},
 		&notifierMock{},
-		&serviceMock.NotificationPublisherMock{},
 	)
 }
 

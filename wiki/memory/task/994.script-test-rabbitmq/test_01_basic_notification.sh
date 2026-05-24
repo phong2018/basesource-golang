@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test_01_basic_notification.sh — happy path: POST todo → notification delivered
 #   Proves the end-to-end notification flow when everything is healthy:
-#   POST todo → usecase publishes to RabbitMQ → worker consumes → ACKs → queue empty.
+#   POST todo → usecase writes outbox_event to DB → OutboxRelay → Kafka
+#   → HandleDomainEvent → PublishNotification → RabbitMQ → worker ACKs → queue empty.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"

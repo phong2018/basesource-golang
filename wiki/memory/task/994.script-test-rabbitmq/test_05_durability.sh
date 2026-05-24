@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# test_05_durability.sh — RabbitMQ queue durability
-#   Proves durable=true + DeliveryMode=Persistent:
-#   The notification publisher lives in the USECASE layer (API process).
-#   When the worker is dead, the API still publishes notifications to
-#   RabbitMQ; they queue up (durable + persistent) and are delivered
-#   when the worker restarts.
+# test_05_durability.sh — end-to-end durability via outbox pattern
+#   Proves the correct flow: usecase writes outbox_event to MySQL (not RabbitMQ).
+#   When worker is offline the event stays pending in DB. On restart, OutboxRelay
+#   publishes to Kafka → HandleDomainEvent → PublishNotification → RabbitMQ → consumer.
 #
 #   Flow: worker alive → POST todo → notification consumed ✓
-#         kill worker → POST another todo → notification sits in queue
-#         restart worker → queued notification delivered ✓
+#         kill worker → POST another todo → outbox_event pending in DB, queue=0
+#         restart worker → relay → kafka → notification delivered ✓
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
@@ -16,10 +14,11 @@ BINARY=/tmp/basesource
 WORKER_LOG=/tmp/worker.log
 API=http://localhost:8080
 RMQ_API=http://localhost:15672
+COMPOSE="docker compose -f $REPO_ROOT/docker/docker-compose.yaml"
 
 echo ""
 echo "========================================="
-echo "  TEST 05 — RabbitMQ queue durability"
+echo "  TEST 05 — Durability via outbox pattern"
 echo "========================================="
 
 pass() { echo "  ✅  $*"; }
@@ -42,7 +41,6 @@ kill_worker() {
     [ $i -eq 15 ] && { pkill -9 -f "$BINARY worker" 2>/dev/null || true; sleep 1; }
     sleep 1
   done
-  # wait for broker to deregister consumer
   for i in $(seq 1 15); do
     C=$(rmq_consumers); C="${C//[$'\t\r\n ']}"
     [ "$C" = "0" ] && return
@@ -67,15 +65,13 @@ for i in $(seq 1 15); do
   sleep 1
 done
 
-# ── step 2: kill worker and confirm 0 consumers ───────────────────────────────
+# ── step 2: kill worker ───────────────────────────────────────────────────────
 echo ""
 echo "--- Step 2: kill worker"
 kill_worker
 pass "worker stopped (0 consumers on queue)"
 
 # ── step 3: POST todo while worker is dead ────────────────────────────────────
-# The usecase (in the API process) publishes the notification directly to
-# RabbitMQ — the relay is not involved in notification delivery.
 echo ""
 echo "--- Step 3: POST todo while worker is offline"
 RESP2=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API/api/v1/todos" \
@@ -83,15 +79,18 @@ RESP2=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API/api/v1/todos" \
 HTTP_CODE2=$(echo "$RESP2" | grep "HTTP_STATUS:" | cut -d: -f2)
 [ "$HTTP_CODE2" = "201" ] && pass "HTTP 201" || fail "HTTP $HTTP_CODE2"
 
-# ── step 4: assert notification is queued (no consumer) ───────────────────────
+# ── step 4: outbox_event must be pending in DB (not in RabbitMQ) ─────────────
 echo ""
-echo "--- Step 4: verify notification is queued (worker offline)"
-for i in $(seq 1 10); do
-  DEPTH=$(rmq_queue_depth); DEPTH="${DEPTH//[$'\t\r\n ']}"
-  [ "$DEPTH" -ge 1 ] && pass "queue has $DEPTH ready message(s)" && break
-  [ $i -eq 10 ] && fail "expected >=1 message in queue after 10s — usecase may not have published"
-  sleep 1
-done
+echo "--- Step 4: verify outbox_event is pending in DB (worker offline)"
+PENDING=$($COMPOSE exec -T db mysql -u appuser -papppass appdb \
+  -e "SELECT COUNT(*) FROM outbox_events WHERE status='pending';" 2>/dev/null \
+  | tail -1 | tr -d ' \t\r\n')
+[ "$PENDING" -ge 1 ] && pass "outbox_events pending=$PENDING in DB" || \
+  fail "expected >=1 pending outbox_event, got $PENDING"
+
+DEPTH=$(rmq_queue_depth); DEPTH="${DEPTH//[$'\t\r\n ']}"
+[ "$DEPTH" = "0" ] && pass "RabbitMQ queue empty — usecase did not publish directly" || \
+  fail "RabbitMQ queue=$DEPTH, expected 0 — usecase must not publish directly"
 
 # ── step 5: restart worker ────────────────────────────────────────────────────
 echo ""
@@ -105,17 +104,29 @@ for i in $(seq 1 20); do
   sleep 1
 done
 
-# ── step 6: assert queued notification delivered after restart ────────────────
+# ── step 6: notification delivered after relay → kafka → handler ─────────────
 echo ""
-echo "--- Step 6: verify queued notification delivered after restart"
-for i in $(seq 1 15); do
+echo "--- Step 6: verify notification delivered after restart"
+for i in $(seq 1 20); do
   COUNT=$( { grep '"notification task received"' "$WORKER_LOG" 2>/dev/null; true; } | wc -l | tr -d ' \t\r\n' )
-  [ "$COUNT" -ge 1 ] && pass "notification delivered after restart (count in new log: $COUNT)" && break
-  [ $i -eq 15 ] && fail "notification not delivered within 15s after restart"
+  [ "$COUNT" -ge 1 ] && pass "notification delivered (count in new log: $COUNT)" && break
+  [ $i -eq 20 ] && fail "notification not delivered within 20s after restart"
   sleep 1
 done
 
-# ── step 7: queue must be empty ───────────────────────────────────────────────
+# ── step 7: outbox_event must now be published in DB ─────────────────────────
+echo ""
+echo "--- Step 7: verify outbox_event marked published in DB"
+for i in $(seq 1 10); do
+  PUBLISHED=$($COMPOSE exec -T db mysql -u appuser -papppass appdb \
+    -e "SELECT COUNT(*) FROM outbox_events WHERE status='published';" 2>/dev/null \
+    | tail -1 | tr -d ' \t\r\n')
+  [ "$PUBLISHED" -ge 1 ] && pass "outbox_events published=$PUBLISHED" && break
+  [ $i -eq 10 ] && fail "outbox_event not marked published after 10s"
+  sleep 1
+done
+
+# ── step 8: queue must be empty ───────────────────────────────────────────────
 for i in $(seq 1 10); do
   DEPTH_AFTER=$(rmq_queue_depth); DEPTH_AFTER="${DEPTH_AFTER//[$'\t\r\n ']}"
   [ "$DEPTH_AFTER" = "0" ] && pass "queue empty after delivery" && break

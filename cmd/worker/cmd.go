@@ -53,7 +53,7 @@ func NewWorkerCommand() *cobra.Command {
 				slog.Info("kafka consumer starting",
 					"topic", cfg.Messaging.KafkaTopic,
 					"group", cfg.Messaging.KafkaGroupID)
-				return c.KafkaConsumer.Start(gCtx, workerPresentation.HandleDomainEvent)
+				return c.KafkaConsumer.Start(gCtx, c.DomainEventHandler.Handle)
 			})
 
 			// goroutine 3: RabbitMQ notification consumer — send email / push
