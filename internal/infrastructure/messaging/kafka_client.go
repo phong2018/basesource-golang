@@ -1,6 +1,8 @@
 package messaging
 
 import (
+	"time"
+
 	"github.com/segmentio/kafka-go"
 	"github.com/yourname/go-clean-base/config"
 )
@@ -42,11 +44,14 @@ func NewKafkaWriter(cfg *config.MessagingConfig) *kafka.Writer {
 //     MaxBytes=10MB caps the maximum fetch size per request.
 func NewKafkaReader(cfg *config.MessagingConfig) *kafka.Reader {
 	return kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     cfg.KafkaBrokers,
-		Topic:       cfg.KafkaTopic,
-		GroupID:     cfg.KafkaGroupID,
-		StartOffset: kafka.FirstOffset,
-		MinBytes:    1,
-		MaxBytes:    10e6,
+		Brokers:           cfg.KafkaBrokers,
+		Topic:             cfg.KafkaTopic,
+		GroupID:           cfg.KafkaGroupID,
+		StartOffset:       kafka.FirstOffset,
+		MinBytes:          1,
+		MaxBytes:          10e6,
+		SessionTimeout:    6 * time.Second,
+		HeartbeatInterval: 2 * time.Second,
+		MaxWait:           500 * time.Millisecond,
 	})
 }

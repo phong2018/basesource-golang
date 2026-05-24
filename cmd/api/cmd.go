@@ -28,6 +28,9 @@ func NewAPICommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// API does not consume Kafka events — release the partition immediately
+			// so the worker has sole ownership of the consumer group.
+			_ = c.KafkaConsumer.Close()
 			defer func() { _ = c.DBClient.Close() }()
 
 			server := apphttp.NewServer(apphttp.Dependencies{

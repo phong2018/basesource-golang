@@ -68,6 +68,9 @@ func (r *OutboxRelay) Start(ctx context.Context) {
 	}
 }
 
+// ProcessOnce exposes a single relay tick for integration tests.
+func (r *OutboxRelay) ProcessOnce(ctx context.Context) { r.process(ctx) }
+
 // process fetches one batch of pending outbox events and publishes each one.
 // Errors on individual events are logged and marked failed; the relay continues
 // to the next event rather than aborting the whole batch.
