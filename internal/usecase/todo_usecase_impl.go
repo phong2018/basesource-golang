@@ -16,21 +16,30 @@ import (
 )
 
 type todoUsecase struct {
-	repo         domainRepo.ITodoRepository
-	auditLogRepo domainRepo.IAuditLogRepository
-	outboxRepo   domainRepo.IOutboxRepository
-	tx           ITransaction
-	notifier     domainSvc.INotificationClient
+	repo           domainRepo.ITodoRepository
+	auditLogRepo   domainRepo.IAuditLogRepository
+	outboxRepo     domainRepo.IOutboxRepository
+	tx             ITransaction
+	notifier       domainSvc.INotificationClient
+	notifPublisher domainSvc.INotificationPublisher
 }
 
 func NewTodoUsecase(
-	repo domainRepo.ITodoRepository,
-	auditLogRepo domainRepo.IAuditLogRepository,
-	outboxRepo domainRepo.IOutboxRepository,
-	tx ITransaction,
-	notifier domainSvc.INotificationClient,
+	repo           domainRepo.ITodoRepository,
+	auditLogRepo   domainRepo.IAuditLogRepository,
+	outboxRepo     domainRepo.IOutboxRepository,
+	tx             ITransaction,
+	notifier       domainSvc.INotificationClient,
+	notifPublisher domainSvc.INotificationPublisher,
 ) ITodoUsecase {
-	return &todoUsecase{repo: repo, auditLogRepo: auditLogRepo, outboxRepo: outboxRepo, tx: tx, notifier: notifier}
+	return &todoUsecase{
+		repo:           repo,
+		auditLogRepo:   auditLogRepo,
+		outboxRepo:     outboxRepo,
+		tx:             tx,
+		notifier:       notifier,
+		notifPublisher: notifPublisher,
+	}
 }
 
 func (u *todoUsecase) GetByID(ctx context.Context, id uint) (*dto.TodoOutput, error) {
@@ -90,14 +99,14 @@ func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*d
 		return nil, apperror.Internal(err)
 	}
 
-	// notification runs after commit — non-fatal, no rollback needed
+	// push notification task to RabbitMQ after commit — non-fatal, no rollback needed
 	n := &domainModel.Notification{
 		To:      "admin@example.com",
 		Subject: "New Todo Created",
 		Body:    "Todo: " + created.Title,
 	}
-	if _, err := u.notifier.Send(ctx, n); err != nil {
-		slog.ErrorContext(ctx, "notification send failed", "error", err)
+	if err := u.notifPublisher.PublishNotification(ctx, n); err != nil {
+		slog.ErrorContext(ctx, "notification publish failed", "error", err)
 	}
 	return mapToOutput(created), nil
 }

@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os/signal"
 	"syscall"
@@ -10,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yourname/go-clean-base/config"
 	"github.com/yourname/go-clean-base/container"
-	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
+	workerPresentation "github.com/yourname/go-clean-base/internal/presentation/worker"
 	"github.com/yourname/go-clean-base/pkg/logger"
 	"golang.org/x/sync/errgroup"
 )
@@ -18,7 +17,7 @@ import (
 func NewWorkerCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
-		Short: "Start outbox relay and event consumer",
+		Short: "Start outbox relay (Kafka) and event consumers (Kafka + RabbitMQ)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger.Setup()
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -36,21 +35,33 @@ func NewWorkerCommand() *cobra.Command {
 			defer func() {
 				_ = c.DBClient.Close()
 				_ = c.RabbitMQClient.Close()
+				_ = c.KafkaConsumer.Close()
+				_ = c.KafkaProducer.Close()
 			}()
 
 			g, gCtx := errgroup.WithContext(ctx)
 
-			// outbox relay: polls DB, publishes to RabbitMQ
+			// goroutine 1: outbox relay → Kafka (domain event streaming)
 			g.Go(func() error {
-				slog.Info("outbox relay starting")
+				slog.Info("outbox relay starting (Kafka)")
 				c.OutboxRelay.Start(gCtx)
 				return nil
 			})
 
-			// consumer: processes todo events from RabbitMQ
+			// goroutine 2: Kafka consumer — analytics / audit log
 			g.Go(func() error {
-				slog.Info("event consumer starting")
-				if err := c.EventConsumer.Start(gCtx, "todo.events.worker", "#", handleEvent); err != nil {
+				slog.Info("kafka consumer starting",
+					"topic", cfg.Messaging.KafkaTopic,
+					"group", cfg.Messaging.KafkaGroupID)
+				return c.KafkaConsumer.Start(gCtx, workerPresentation.HandleDomainEvent)
+			})
+
+			// goroutine 3: RabbitMQ notification consumer — send email / push
+			g.Go(func() error {
+				slog.Info("rabbitmq notification consumer starting")
+				if err := c.RabbitMQNotificationConsumer.Start(gCtx,
+					"todo.notifications", "todo.notifications", workerPresentation.HandleNotificationTask,
+				); err != nil {
 					return err
 				}
 				<-gCtx.Done()
@@ -63,11 +74,3 @@ func NewWorkerCommand() *cobra.Command {
 	}
 }
 
-func handleEvent(body []byte) error {
-	var event domainModel.OutboxEvent
-	if err := json.Unmarshal(body, &event); err != nil {
-		return err
-	}
-	slog.Info("event received", "event_type", event.EventType, "aggregate_id", event.AggregateID)
-	return nil
-}
