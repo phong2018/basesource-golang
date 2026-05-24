@@ -75,6 +75,7 @@ print_results() {
   echo "########################################"
 }
 
+run_test test_01_basic_notification.sh
 run_test test_05_durability.sh
 run_test test_06_queue_while_offline.sh
 run_test test_07_nack.sh
