@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: basesource-migrate
+  namespace: basesource
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: migrate
+          image: basesource:local
+          imagePullPolicy: Never
+          args: ["migrate"]
+          envFrom:
+            - configMapRef:
+                name: basesource-config
+            - secretRef:
+                name: basesource-secret

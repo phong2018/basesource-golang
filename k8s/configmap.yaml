@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: basesource-config
+  namespace: basesource
+data:
+  APP_PORT: "8080"
+  RABBITMQ_EXCHANGE: "todo.events"
+  KAFKA_TOPIC: "todo-events"
+  KAFKA_GROUP_ID: "todo-worker"
+  AWS_REGION: "ap-northeast-1"
+  AWS_S3_BUCKET: ""
+  NOTIFICATION_BASE_URL: ""
