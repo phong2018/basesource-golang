@@ -79,11 +79,13 @@ outbox_deliveries
 ### Publisher — the RabbitMQ outbox relay
 
 `RabbitMQOutboxRelay` is constructed with `NewRabbitMQOutboxRelay` in `container/container.go`.
+It uses a **dedicated** `RabbitMQPublisherClient` (separate from the consumer's client) so reconnects never interfere with each other.
 
 - Polls `outbox_deliveries WHERE destination='rabbitmq' AND status='pending'` every 2 seconds
 - Calls `rabbitmq_publisher.Publish(event)` → sends to exchange `todo.events` with routing key = `event.EventType` (e.g. `todo.created`)
 - On success: marks delivery `published`, records `published_at`, increments `attempt_count`
-- On failure: marks delivery `failed`, records `last_error`, increments `attempt_count`
+- On transient publish failure (e.g. broker down): leaves delivery as `pending` — **no** `MarkDeliveryFailed` call; the relay retries on the next 2-second tick
+- `rabbitmqPublisher.Publish()` itself tries one automatic reconnect before returning the error, so a broker restart is recovered on the next relay tick
 
 ```
 usecase.Create()
@@ -93,18 +95,23 @@ RabbitMQOutboxRelay (2s later)
     SELECT delivery WHERE destination='rabbitmq' AND status='pending'
     → GetEventByID()
     → rabbitmq_publisher.Publish()
-    → MarkDeliveryPublished()
+         ├─ success  → MarkDeliveryPublished()
+         └─ error    → try client.Reconnect() → retry Publish()
+                           ├─ success → MarkDeliveryPublished()
+                           └─ error   → log warning, leave delivery pending (retry next tick)
 ```
 
 ### Consumer — the notification handler
 
 `RabbitMQNotificationConsumer` runs in goroutine 4 of the worker.
+It uses a **dedicated** `RabbitMQConsumerClient` (separate from the publisher's client).
 
 - Queue: `todo.notifications`
 - `prefetch=1` — processes one message at a time (fair dispatch)
 - Calls `HandleNotificationTask(body)` for each message
 - Sends `Ack()` when handler succeeds → RabbitMQ removes the message
 - Sends `Nack(requeue=false)` when handler fails → message goes to dead-letter queue
+- **Auto-reconnect**: when the broker closes the channel (`!ok`), the internal goroutine waits 3 seconds, calls `client.Reconnect()`, re-declares the queue and binding, and resumes consuming — no worker restart required
 
 ---
 
@@ -117,12 +124,12 @@ RabbitMQOutboxRelay (2s later)
 | `internal/domain/repository/outbox_repository.go` | `IOutboxRepository` — 5-method interface |
 | `internal/domain/repository/mock/outbox_repository_mock.go` | Mock for unit tests |
 | `internal/infrastructure/repository/outbox_repository_impl.go` | DB impl: `CreateEventWithDeliveries`, `ListPendingDeliveries`, `GetEventByID`, `MarkDeliveryPublished`, `MarkDeliveryFailed` |
-| `internal/infrastructure/messaging/outbox_relay.go` | Generic `OutboxRelay` struct; `NewKafkaOutboxRelay` / `NewRabbitMQOutboxRelay` constructors |
-| `internal/infrastructure/messaging/rabbitmq_connection.go` | Shared RabbitMQ connection + topic exchange declaration |
-| `internal/infrastructure/messaging/rabbitmq_publisher.go` | `IEventPublisher` impl — persistent delivery mode |
-| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Durable queue, routing key binding, prefetch=1, ACK/NACK |
-| `container/container.go` | Wires `KafkaOutboxRelay` + `RabbitMQOutboxRelay` independently |
-| `cmd/worker/cmd.go` | Starts 4 goroutines: kafka relay, rabbitmq relay, kafka consumer, rabbitmq consumer |
+| `internal/infrastructure/messaging/outbox_relay.go` | Generic `OutboxRelay` struct; `NewKafkaOutboxRelay` / `NewRabbitMQOutboxRelay` constructors; publish failure leaves delivery pending |
+| `internal/infrastructure/messaging/rabbitmq_connection.go` | `RabbitMQClient`: dial, exchange declare, `Reconnect()` method |
+| `internal/infrastructure/messaging/rabbitmq_publisher.go` | `IEventPublisher` impl — persistent delivery mode; auto-reconnect on error with mutex |
+| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Durable queue, routing key binding, prefetch=1, ACK/NACK; auto-reconnect loop with 3s backoff |
+| `container/container.go` | Creates **two** `RabbitMQClient` instances (`RabbitMQPublisherClient` + `RabbitMQConsumerClient`); wires `KafkaOutboxRelay` + `RabbitMQOutboxRelay` independently |
+| `cmd/worker/cmd.go` | Starts 4 goroutines: kafka relay, rabbitmq relay, kafka consumer, rabbitmq consumer; closes both clients on shutdown |
 | `db/migrations/20260524000003_create_outbox_events_table.sql` | Creates `outbox_events` table |
 | `db/migrations/20260525000005_create_outbox_deliveries.sql` | Creates `outbox_deliveries` table |
 
@@ -135,7 +142,7 @@ RabbitMQOutboxRelay (2s later)
 | Delivery guarantee | At-least-once — relay retries failed delivery rows |
 | Latency | ~2s (configurable `relayInterval` in `outbox_relay.go`) |
 | Consumer requirement | Must be idempotent — use `event_id` (UUID) to deduplicate if needed |
-| RabbitMQ outage | API still works — deliveries queue up in MySQL, catch up on recovery |
+| RabbitMQ outage | API still works — deliveries queue up in MySQL; publisher auto-reconnects and consumer resumes after broker restarts, no worker restart needed |
 | Independent retry | Kafka failure does not block RabbitMQ delivery and vice versa |
 | vs direct publish | Direct publish after `tx.Commit()` loses the event on crash; outbox survives |
 
@@ -233,7 +240,7 @@ docker compose -f docker/docker-compose.yaml exec db \
 
 ---
 
-### Scenario 3 — RabbitMQ goes down: Kafka unaffected, catches up on recovery
+### Scenario 3 — RabbitMQ goes down: Kafka unaffected, auto-recovers on restart
 
 ```bash
 # 1. Stop RabbitMQ
@@ -241,13 +248,18 @@ docker compose -f docker/docker-compose.yaml stop rabbitmq
 
 # 2. Create a todo — API still returns 201
 
-# 3. KafkaOutboxRelay publishes its delivery successfully
-#    RabbitMQOutboxRelay logs error, rabbitmq delivery stays pending
+# 3. KafkaOutboxRelay publishes its delivery successfully (independent)
+#    RabbitMQOutboxRelay: Publish() fails → tries client.Reconnect() → also fails
+#    → logs warning, rabbitmq delivery stays pending (NOT marked failed)
+#    → consumer goroutine detects !ok → enters reconnect loop (3s backoff)
 
 # 4. Restart RabbitMQ
 docker compose -f docker/docker-compose.yaml start rabbitmq
 
-# 5. Within 2s RabbitMQOutboxRelay publishes the pending delivery
+# 5. rabbitmq_publisher: next relay tick → Publish() fails → Reconnect() succeeds
+#    → retries Publish() → succeeds → MarkDeliveryPublished()
+#    consumer goroutine: Reconnect() succeeds → re-declares queue → resumes consuming
+#    → notification delivered — no worker restart required
 ```
 
 ---

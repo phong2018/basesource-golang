@@ -31,16 +31,24 @@ TodoUsecase.Create()
 KafkaOutboxRelay (every 2s)
     SELECT outbox_deliveries WHERE destination='kafka' AND status='pending'
     → GetEventByID()
+         ├─ error (orphaned row) → MarkDeliveryFailed(), continue
+         └─ ok
     → KafkaProducer.Publish() → Kafka topic "todo-events"
-    → MarkDeliveryPublished()
+         ├─ error → log warning, leave delivery pending (retry next tick)
+         └─ ok   → MarkDeliveryPublished()
         └─ KafkaConsumer.Start()
              └─ DomainEventHandler.Handle() → logs "domain event received"
 
 RabbitMQOutboxRelay (every 2s)
     SELECT outbox_deliveries WHERE destination='rabbitmq' AND status='pending'
     → GetEventByID()
+         ├─ error (orphaned row) → MarkDeliveryFailed(), continue
+         └─ ok
     → RabbitMQPublisher.Publish() → RabbitMQ exchange "todo.events"
-    → MarkDeliveryPublished()
+         ├─ error → try Reconnect() → retry Publish()
+         │           ├─ ok   → MarkDeliveryPublished()
+         │           └─ error → log warning, leave delivery pending (retry next tick)
+         └─ ok   → MarkDeliveryPublished()
         └─ RabbitMQNotificationConsumer.Start()
              └─ HandleNotificationTask() → logs "notification task received"
 ```
@@ -195,13 +203,13 @@ goroutine 4: RabbitMQNotificationConsumer.Start() — RabbitMQ → HandleNotific
 | `internal/domain/repository/outbox_repository.go` | `IOutboxRepository` 5-method interface |
 | `internal/domain/repository/mock/outbox_repository_mock.go` | Mock for unit tests |
 | `internal/infrastructure/repository/outbox_repository_impl.go` | SQL impl of `IOutboxRepository` |
-| `internal/infrastructure/messaging/outbox_relay.go` | `OutboxRelay` struct; `NewKafkaOutboxRelay` / `NewRabbitMQOutboxRelay` |
+| `internal/infrastructure/messaging/outbox_relay.go` | `OutboxRelay` struct; `NewKafkaOutboxRelay` / `NewRabbitMQOutboxRelay`; publish failure leaves delivery pending for retry; `GetEventByID` failure marks delivery failed |
 | `internal/infrastructure/messaging/kafka_client.go` | `NewKafkaWriter` / `NewKafkaReader` factory |
 | `internal/infrastructure/messaging/kafka_producer.go` | `IEventPublisher` impl for Kafka |
 | `internal/infrastructure/messaging/kafka_consumer.go` | Reads from Kafka, manual offset commit |
-| `internal/infrastructure/messaging/rabbitmq_publisher.go` | `IEventPublisher` impl for RabbitMQ |
-| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Durable queue, ACK/NACK |
-| `container/container.go` | Wires both relay instances independently |
+| `internal/infrastructure/messaging/rabbitmq_publisher.go` | `IEventPublisher` impl for RabbitMQ; auto-reconnect on publish error (mutex-safe) |
+| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Durable queue, ACK/NACK; auto-reconnect loop with 3s backoff on channel close |
+| `container/container.go` | Creates two separate `RabbitMQClient` instances (`RabbitMQPublisherClient` + `RabbitMQConsumerClient`); wires both relay instances independently |
 | `cmd/worker/cmd.go` | Starts 4 goroutines |
 | `db/migrations/20260524000003_create_outbox_events_table.sql` | `outbox_events` table |
 | `db/migrations/20260525000005_create_outbox_deliveries.sql` | `outbox_deliveries` table |
@@ -250,9 +258,9 @@ Without this, a brand-new consumer group starts at `LastOffset` and misses all e
 
 ### Scenario 2: Kafka down, RabbitMQ healthy
 
-- `KafkaOutboxRelay` fails → kafka delivery stays `pending`, `last_error` recorded
-- `RabbitMQOutboxRelay` succeeds → rabbitmq delivery becomes `published`
-- When Kafka recovers, `KafkaOutboxRelay` retries the pending delivery on the next tick
+- `KafkaOutboxRelay` publish fails → logs warning, kafka delivery stays `pending` (`last_error` is **not** updated for publish failures — only for missing event rows)
+- `RabbitMQOutboxRelay` succeeds independently → rabbitmq delivery becomes `published`
+- When Kafka recovers, `KafkaOutboxRelay` retries the pending delivery on the next tick automatically
 
 ### Scenario 3: Worker restart — Kafka replay
 
