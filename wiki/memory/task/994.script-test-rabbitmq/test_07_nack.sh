@@ -50,9 +50,9 @@ ERROR_BEFORE=$( { grep 'consumer handler failed' "$WORKER_LOG" 2>/dev/null; true
 echo ""
 echo "--- Step 2: inject malformed message (invalid JSON)"
 curl -s -u guest:guest -X POST \
-  "$RMQ_API/api/exchanges/%2F/amq.default/publish" \
+  "$RMQ_API/api/exchanges/%2F/todo.events/publish" \
   -H "Content-Type: application/json" \
-  -d '{"properties":{"delivery_mode":2},"routing_key":"todo.notifications","payload":"not-valid-json","payload_encoding":"string"}' \
+  -d '{"properties":{"delivery_mode":2},"routing_key":"todo.created","payload":"not-valid-json","payload_encoding":"string"}' \
   > /dev/null
 pass "malformed message injected"
 

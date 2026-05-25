@@ -21,16 +21,18 @@ type Container struct {
 	Cfg      *config.Config
 	DBClient *database.Client
 
-	// RabbitMQ — notification task queue (fire-and-forget jobs: email, push)
-	RabbitMQClient               *messaging.RabbitMQClient
+	// RabbitMQ — two independent connections: one for publishing (relay), one for consuming
+	RabbitMQPublisherClient      *messaging.RabbitMQClient
+	RabbitMQConsumerClient       *messaging.RabbitMQClient
 	RabbitMQNotificationConsumer *messaging.RabbitMQConsumer
 
 	// Kafka — domain event streaming (durable, replayable audit log)
 	KafkaProducer service.IEventPublisher
 	KafkaConsumer *messaging.KafkaConsumer
 
-	// Outbox relay — polls DB outbox_events and forwards to Kafka
-	OutboxRelay *messaging.OutboxRelay
+	// Outbox relays — each polls outbox_deliveries for its own destination independently
+	KafkaOutboxRelay    *messaging.OutboxRelay
+	RabbitMQOutboxRelay *messaging.OutboxRelay
 
 	// Domain event handler — processes Kafka events and publishes downstream tasks
 	DomainEventHandler *workerPresentation.DomainEventHandler
@@ -55,23 +57,28 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	auditLogRepo := infraRepo.NewAuditLogRepository(db)
 	outboxRepo   := infraRepo.NewOutboxRepository(db)
 
-	// ── RabbitMQ (notification task queue) ──────────────────────────────────
-	// Used for fire-and-forget jobs: usecase publishes a task, worker consumes it.
-	rmq, err := messaging.NewRabbitMQClient(&cfg.Messaging)
+	// ── RabbitMQ — separate connections for publisher and consumer ───────────
+	rmqPub, err := messaging.NewRabbitMQClient(&cfg.Messaging)
 	if err != nil {
 		return nil, err
 	}
-	rmqNotifPublisher := messaging.NewRabbitMQNotificationPublisher(rmq)
-	rmqNotifConsumer  := messaging.NewRabbitMQConsumer(rmq)
+	rmqCon, err := messaging.NewRabbitMQClient(&cfg.Messaging)
+	if err != nil {
+		_ = rmqPub.Close()
+		return nil, err
+	}
+	rmqNotifConsumer := messaging.NewRabbitMQConsumer(rmqCon)
+	rmqPublisher     := messaging.NewRabbitMQPublisher(rmqPub)
 
 	// ── Kafka (domain event streaming) ──────────────────────────────────────
-	// OutboxRelay reads pending outbox_events from DB and publishes to Kafka.
-	// KafkaConsumer reads from Kafka for audit log / analytics downstream.
 	kafkaWriter   := messaging.NewKafkaWriter(&cfg.Messaging)
 	kafkaReader   := messaging.NewKafkaReader(&cfg.Messaging)
 	kafkaProducer := messaging.NewKafkaProducer(kafkaWriter)
 	kafkaConsumer := messaging.NewKafkaConsumer(kafkaReader)
-	kafkaOutboxRelay := messaging.NewOutboxRelay(outboxRepo, kafkaProducer)
+
+	// ── Outbox relays — independent per broker ───────────────────────────────
+	kafkaOutboxRelay    := messaging.NewKafkaOutboxRelay(outboxRepo, kafkaProducer)
+	rabbitmqOutboxRelay := messaging.NewRabbitMQOutboxRelay(outboxRepo, rmqPublisher)
 
 	// ── External HTTP services ───────────────────────────────────────────────
 	notifier := httpclient.NewNotificationClient(cfg)
@@ -80,7 +87,7 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 	s3 := s3client.NewS3Client(ctx, cfg)
 
 	// ── Domain event handler ─────────────────────────────────────────────────
-	domainEventHandler := workerPresentation.NewDomainEventHandler(rmqNotifPublisher)
+	domainEventHandler := workerPresentation.NewDomainEventHandler()
 
 	// ── Usecase layer ────────────────────────────────────────────────────────
 	todoUsecase := usecase.NewTodoUsecase(
@@ -91,12 +98,15 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		Cfg:      cfg,
 		DBClient: db,
 
-		RabbitMQClient:               rmq,
+		RabbitMQPublisherClient:      rmqPub,
+		RabbitMQConsumerClient:       rmqCon,
 		RabbitMQNotificationConsumer: rmqNotifConsumer,
 
 		KafkaProducer: kafkaProducer,
 		KafkaConsumer: kafkaConsumer,
-		OutboxRelay:   kafkaOutboxRelay,
+
+		KafkaOutboxRelay:    kafkaOutboxRelay,
+		RabbitMQOutboxRelay: rabbitmqOutboxRelay,
 
 		DomainEventHandler: domainEventHandler,
 

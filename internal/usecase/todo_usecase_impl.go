@@ -89,7 +89,10 @@ func (u *todoUsecase) Create(ctx context.Context, input dto.CreateTodoInput) (*d
 		}); err != nil {
 			return err
 		}
-		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoCreated, fmt.Sprint(created.ID), created))
+		return u.outboxRepo.CreateEventWithDeliveries(ctx,
+				buildOutboxEvent(domainModel.EventTypeTodoCreated, "todo", fmt.Sprint(created.ID), created),
+				[]string{domainModel.OutboxDestinationKafka, domainModel.OutboxDestinationRabbitMQ},
+			)
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Create failed", "error", err)
@@ -124,7 +127,10 @@ func (u *todoUsecase) Update(ctx context.Context, input dto.UpdateTodoInput) (*d
 		}); err != nil {
 			return err
 		}
-		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoUpdated, fmt.Sprint(updated.ID), updated))
+		return u.outboxRepo.CreateEventWithDeliveries(ctx,
+				buildOutboxEvent(domainModel.EventTypeTodoUpdated, "todo", fmt.Sprint(updated.ID), updated),
+				[]string{domainModel.OutboxDestinationKafka, domainModel.OutboxDestinationRabbitMQ},
+			)
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Update failed", "error", err, "id", input.ID)
@@ -149,7 +155,10 @@ func (u *todoUsecase) Delete(ctx context.Context, id uint) error {
 		}); err != nil {
 			return err
 		}
-		return u.outboxRepo.Create(ctx, buildOutboxEvent(domainModel.EventTypeTodoDeleted, fmt.Sprint(id), map[string]any{"id": id}))
+		return u.outboxRepo.CreateEventWithDeliveries(ctx,
+				buildOutboxEvent(domainModel.EventTypeTodoDeleted, "todo", fmt.Sprint(id), map[string]any{"id": id}),
+				[]string{domainModel.OutboxDestinationKafka, domainModel.OutboxDestinationRabbitMQ},
+			)
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Delete failed", "error", err, "id", id)
@@ -158,13 +167,14 @@ func (u *todoUsecase) Delete(ctx context.Context, id uint) error {
 	return nil
 }
 
-func buildOutboxEvent(eventType, aggregateID string, payload any) *domainModel.OutboxEvent {
+func buildOutboxEvent(eventType, aggregateType, aggregateID string, payload any) *domainModel.OutboxEvent {
 	body, _ := json.Marshal(payload)
 	return &domainModel.OutboxEvent{
-		EventID:     uuid.NewString(),
-		EventType:   eventType,
-		AggregateID: aggregateID,
-		Payload:     string(body),
+		EventID:       uuid.NewString(),
+		EventType:     eventType,
+		AggregateType: aggregateType,
+		AggregateID:   aggregateID,
+		Payload:       string(body),
 	}
 }
 

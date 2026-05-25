@@ -67,7 +67,7 @@ done
 echo ""
 echo "--- Step 3: verify $BATCH outbox_events pending in DB, RabbitMQ queue=0"
 PENDING=$($COMPOSE exec -T db mysql -u appuser -papppass appdb \
-  -e "SELECT COUNT(*) FROM outbox_events WHERE status='pending';" 2>/dev/null \
+  -e "SELECT COUNT(*) FROM outbox_deliveries WHERE destination='rabbitmq' AND status='pending';" 2>/dev/null \
   | tail -1 | tr -d ' \t\r\n')
 [ "$PENDING" -ge "$BATCH" ] && pass "outbox_events pending=$PENDING (expected >=$BATCH)" || \
   fail "expected >=$BATCH pending outbox_events, got $PENDING"

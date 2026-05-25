@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # test_05_durability.sh — end-to-end durability via outbox pattern
-#   Proves the correct flow: usecase writes outbox_event to MySQL (not RabbitMQ).
-#   When worker is offline the event stays pending in DB. On restart, OutboxRelay
-#   publishes to Kafka → HandleDomainEvent → PublishNotification → RabbitMQ → consumer.
+#   Proves the correct flow: usecase writes outbox_deliveries to MySQL (not RabbitMQ).
+#   When worker is offline the delivery stays pending in DB. On restart,
+#   RabbitMQOutboxRelay picks up the pending delivery → publishes to RabbitMQ
+#   todo.events exchange → NotificationConsumer handles it.
 #
 #   Flow: worker alive → POST todo → notification consumed ✓
-#         kill worker → POST another todo → outbox_event pending in DB, queue=0
-#         restart worker → relay → kafka → notification delivered ✓
+#         kill worker → POST another todo → outbox_deliveries pending in DB, queue=0
+#         restart worker → RabbitMQOutboxRelay → notification delivered ✓
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
@@ -83,7 +84,7 @@ HTTP_CODE2=$(echo "$RESP2" | grep "HTTP_STATUS:" | cut -d: -f2)
 echo ""
 echo "--- Step 4: verify outbox_event is pending in DB (worker offline)"
 PENDING=$($COMPOSE exec -T db mysql -u appuser -papppass appdb \
-  -e "SELECT COUNT(*) FROM outbox_events WHERE status='pending';" 2>/dev/null \
+  -e "SELECT COUNT(*) FROM outbox_deliveries WHERE destination='rabbitmq' AND status='pending';" 2>/dev/null \
   | tail -1 | tr -d ' \t\r\n')
 [ "$PENDING" -ge 1 ] && pass "outbox_events pending=$PENDING in DB" || \
   fail "expected >=1 pending outbox_event, got $PENDING"
@@ -119,7 +120,7 @@ echo ""
 echo "--- Step 7: verify outbox_event marked published in DB"
 for i in $(seq 1 10); do
   PUBLISHED=$($COMPOSE exec -T db mysql -u appuser -papppass appdb \
-    -e "SELECT COUNT(*) FROM outbox_events WHERE status='published';" 2>/dev/null \
+    -e "SELECT COUNT(*) FROM outbox_deliveries WHERE destination='rabbitmq' AND status='published';" 2>/dev/null \
     | tail -1 | tr -d ' \t\r\n')
   [ "$PUBLISHED" -ge 1 ] && pass "outbox_events published=$PUBLISHED" && break
   [ $i -eq 10 ] && fail "outbox_event not marked published after 10s"

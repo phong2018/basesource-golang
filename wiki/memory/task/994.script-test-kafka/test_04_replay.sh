@@ -91,10 +91,10 @@ else
   echo "  ⚠️  could not read replay group LAG"
 fi
 
-# ── cleanup: stop replay worker ───────────────────────────────────────────────
-pkill -TERM -f "$BINARY worker" 2>/dev/null || true
+# ── cleanup: stop replay worker only (primary worker must keep running) ───────
+kill -TERM $REPLAY_PID 2>/dev/null || true
 sleep 2
-pkill -9 -f "$BINARY worker" 2>/dev/null || true
+kill -9 $REPLAY_PID 2>/dev/null || true
 
 echo ""
 echo "  TEST 04 PASSED ✅"

@@ -8,35 +8,46 @@ import (
 )
 
 type OutboxRepositoryMock struct {
-	CreateFn        func(ctx context.Context, event *domainModel.OutboxEvent) error
-	ListPendingFn   func(ctx context.Context, limit int) ([]*domainModel.OutboxEvent, error)
-	MarkPublishedFn func(ctx context.Context, id uint) error
-	MarkFailedFn    func(ctx context.Context, id uint) error
+	CreateEventWithDeliveriesFn func(ctx context.Context, event *domainModel.OutboxEvent, destinations []string) error
+	ListPendingDeliveriesFn     func(ctx context.Context, destination string, limit int) ([]*domainModel.OutboxDelivery, error)
+	GetEventByIDFn              func(ctx context.Context, id uint) (*domainModel.OutboxEvent, error)
+	MarkDeliveryPublishedFn     func(ctx context.Context, deliveryID uint) error
+	MarkDeliveryFailedFn        func(ctx context.Context, deliveryID uint, errMsg string) error
 }
 
 var _ domainRepo.IOutboxRepository = (*OutboxRepositoryMock)(nil)
 
-func (m *OutboxRepositoryMock) Create(ctx context.Context, event *domainModel.OutboxEvent) error {
-	if m.CreateFn != nil {
-		return m.CreateFn(ctx, event)
+func (m *OutboxRepositoryMock) CreateEventWithDeliveries(ctx context.Context, event *domainModel.OutboxEvent, destinations []string) error {
+	if m.CreateEventWithDeliveriesFn != nil {
+		return m.CreateEventWithDeliveriesFn(ctx, event, destinations)
 	}
 	return nil
 }
-func (m *OutboxRepositoryMock) ListPending(ctx context.Context, limit int) ([]*domainModel.OutboxEvent, error) {
-	if m.ListPendingFn != nil {
-		return m.ListPendingFn(ctx, limit)
+
+func (m *OutboxRepositoryMock) ListPendingDeliveries(ctx context.Context, destination string, limit int) ([]*domainModel.OutboxDelivery, error) {
+	if m.ListPendingDeliveriesFn != nil {
+		return m.ListPendingDeliveriesFn(ctx, destination, limit)
 	}
 	return nil, nil
 }
-func (m *OutboxRepositoryMock) MarkPublished(ctx context.Context, id uint) error {
-	if m.MarkPublishedFn != nil {
-		return m.MarkPublishedFn(ctx, id)
+
+func (m *OutboxRepositoryMock) GetEventByID(ctx context.Context, id uint) (*domainModel.OutboxEvent, error) {
+	if m.GetEventByIDFn != nil {
+		return m.GetEventByIDFn(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *OutboxRepositoryMock) MarkDeliveryPublished(ctx context.Context, deliveryID uint) error {
+	if m.MarkDeliveryPublishedFn != nil {
+		return m.MarkDeliveryPublishedFn(ctx, deliveryID)
 	}
 	return nil
 }
-func (m *OutboxRepositoryMock) MarkFailed(ctx context.Context, id uint) error {
-	if m.MarkFailedFn != nil {
-		return m.MarkFailedFn(ctx, id)
+
+func (m *OutboxRepositoryMock) MarkDeliveryFailed(ctx context.Context, deliveryID uint, errMsg string) error {
+	if m.MarkDeliveryFailedFn != nil {
+		return m.MarkDeliveryFailedFn(ctx, deliveryID, errMsg)
 	}
 	return nil
 }

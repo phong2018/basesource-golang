@@ -8,10 +8,14 @@ import (
 )
 
 func HandleNotificationTask(body []byte) error {
-	var n domainModel.Notification
-	if err := json.Unmarshal(body, &n); err != nil {
+	var event domainModel.OutboxEvent
+	if err := json.Unmarshal(body, &event); err != nil {
 		return err
 	}
-	slog.Info("notification task received", "to", n.To, "subject", n.Subject)
+	slog.Info("notification task received",
+		"event_type", event.EventType,
+		"aggregate_id", event.AggregateID,
+		"event_id", event.EventID,
+	)
 	return nil
 }

@@ -73,6 +73,33 @@ func (c *RabbitMQClient) Channel() *amqp.Channel {
 	return c.channel
 }
 
+// Reconnect closes the current connection and dials a new one.
+// Called by publisher/consumer components when they detect a channel error.
+func (c *RabbitMQClient) Reconnect() error {
+	_ = c.channel.Close()
+	_ = c.conn.Close()
+
+	conn, err := amqp.Dial(c.cfg.RabbitMQURL)
+	if err != nil {
+		return fmt.Errorf("rabbitmq redial: %w", err)
+	}
+	ch, err := conn.Channel()
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("rabbitmq reopen channel: %w", err)
+	}
+	if err := ch.ExchangeDeclare(
+		c.cfg.RabbitMQExchange, "topic", true, false, false, false, nil,
+	); err != nil {
+		_ = ch.Close()
+		_ = conn.Close()
+		return fmt.Errorf("rabbitmq redeclare exchange: %w", err)
+	}
+	c.conn = conn
+	c.channel = ch
+	return nil
+}
+
 // Close shuts down the channel first, then the TCP connection.
 // Closing the channel flushes any pending confirms; closing the connection
 // terminates all multiplexed channels. Called from the worker defer block.

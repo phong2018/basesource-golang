@@ -43,14 +43,14 @@ wait_for_log_agg() {
 }
 
 wait_for_db_status() {
-  local agg=$1 event_type=$2 expected=$3 timeout=${4:-10}
+  local agg=$1 event_type=$2 dest=$3 expected=$4 timeout=${5:-10}
   local i=0
   while true; do
     got=$($COMPOSE exec -T db mysql -u appuser -papppass appdb -sNe \
-      "SELECT status FROM outbox_events WHERE aggregate_id='$agg' AND event_type='$event_type' ORDER BY id DESC LIMIT 1;" \
+      "SELECT d.status FROM outbox_events e JOIN outbox_deliveries d ON d.outbox_event_id = e.id WHERE e.aggregate_id='$agg' AND e.event_type='$event_type' AND d.destination='$dest' ORDER BY d.id DESC LIMIT 1;" \
       2>/dev/null || true)
-    [ "$got" = "$expected" ] && pass "outbox[$agg/$event_type] status=$expected" && return
-    [ $i -ge $timeout ] && fail "outbox[$agg/$event_type]: want $expected, got '$got'"
+    [ "$got" = "$expected" ] && pass "outbox[$agg/$event_type] $dest status=$expected" && return
+    [ $i -ge $timeout ] && fail "outbox[$agg/$event_type] $dest: want $expected, got '$got'"
     sleep 1; i=$((i+1))
   done
 }
@@ -94,7 +94,7 @@ DONE_VAL=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin
 # ── step 3: outbox published ─────────────────────────────────────────────────
 echo ""
 echo "--- Step 3: outbox_events status=published (todo.updated)"
-wait_for_db_status "$TODO_ID" "todo.updated" "published" 10
+wait_for_db_status "$TODO_ID" "todo.updated" "kafka" "published" 10
 
 # ── step 4: domain event received ────────────────────────────────────────────
 echo ""

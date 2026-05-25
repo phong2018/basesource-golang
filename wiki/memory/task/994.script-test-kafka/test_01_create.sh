@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test_01_create.sh — POST a todo and verify the full create flow
 #   - HTTP 201 response
-#   - outbox_events row status=published
+#   - outbox kafka delivery status=published
+#   - outbox rabbitmq delivery status=published
 #   - worker log: domain event received (todo.created)
 #   - worker log: notification task received
 #   - message present in Kafka topic
@@ -43,14 +44,14 @@ wait_for_log_agg() {
 }
 
 wait_for_db_status() {
-  local agg=$1 event_type=$2 expected=$3 timeout=${4:-10}
+  local agg=$1 event_type=$2 dest=$3 expected=$4 timeout=${5:-10}
   local i=0
   while true; do
     got=$($COMPOSE exec -T db mysql -u appuser -papppass appdb -sNe \
-      "SELECT status FROM outbox_events WHERE aggregate_id='$agg' AND event_type='$event_type' ORDER BY id DESC LIMIT 1;" \
+      "SELECT d.status FROM outbox_events e JOIN outbox_deliveries d ON d.outbox_event_id = e.id WHERE e.aggregate_id='$agg' AND e.event_type='$event_type' AND d.destination='$dest' ORDER BY d.id DESC LIMIT 1;" \
       2>/dev/null || true)
-    [ "$got" = "$expected" ] && pass "outbox[$agg/$event_type] status=$expected" && return
-    [ $i -ge $timeout ] && fail "outbox[$agg/$event_type]: want $expected, got '$got'"
+    [ "$got" = "$expected" ] && pass "outbox[$agg/$event_type] $dest status=$expected" && return
+    [ $i -ge $timeout ] && fail "outbox[$agg/$event_type] $dest: want $expected, got '$got'"
     sleep 1; i=$((i+1))
   done
 }
@@ -69,24 +70,29 @@ HTTP_CODE=$(echo "$RESP" | grep "HTTP_STATUS:" | cut -d: -f2)
 TODO_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
 [ -n "$TODO_ID" ] && pass "todo id=$TODO_ID" || fail "could not extract id from: $BODY"
 
-# ── step 2: outbox published ─────────────────────────────────────────────────
+# ── step 2: kafka delivery published ─────────────────────────────────────────
 echo ""
-echo "--- Step 2: outbox_events status=published"
-wait_for_db_status "$TODO_ID" "todo.created" "published" 10
+echo "--- Step 2: kafka delivery status=published"
+wait_for_db_status "$TODO_ID" "todo.created" "kafka" "published" 10
 
-# ── step 3: domain event received in worker log ──────────────────────────────
+# ── step 3: rabbitmq delivery published ──────────────────────────────────────
 echo ""
-echo "--- Step 3: domain event received (todo.created)"
+echo "--- Step 3: rabbitmq delivery status=published"
+wait_for_db_status "$TODO_ID" "todo.created" "rabbitmq" "published" 10
+
+# ── step 4: domain event received in worker log ──────────────────────────────
+echo ""
+echo "--- Step 4: domain event received (todo.created)"
 wait_for_log_agg "$TODO_ID" "todo.created" 30
 
-# ── step 4: notification task received ───────────────────────────────────────
+# ── step 5: notification task received ───────────────────────────────────────
 echo ""
-echo "--- Step 4: notification task received (RabbitMQ)"
+echo "--- Step 5: notification task received (RabbitMQ)"
 wait_for_log "notification task received" 10
 
-# ── step 5: message in Kafka topic ───────────────────────────────────────────
+# ── step 6: message in Kafka topic ───────────────────────────────────────────
 echo ""
-echo "--- Step 5: message in Kafka topic $KAFKA_TOPIC"
+echo "--- Step 6: message in Kafka topic $KAFKA_TOPIC"
 KAFKA_OUT=$($COMPOSE exec -T kafka \
   /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 \

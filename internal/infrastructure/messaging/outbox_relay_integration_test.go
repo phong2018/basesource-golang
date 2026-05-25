@@ -33,8 +33,7 @@ func uniqueTopic(t *testing.T) string {
 	return fmt.Sprintf("test-outbox-%d", time.Now().UnixNano())
 }
 
-// createTopic pre-creates a topic via the Kafka admin API so the producer
-// doesn't hit "Unknown Topic" on its first write while auto-create is pending.
+// createTopic pre-creates a topic via the Kafka admin API.
 func createTopic(t *testing.T, topic string) {
 	t.Helper()
 
@@ -64,10 +63,30 @@ func createTopic(t *testing.T, topic string) {
 	}
 }
 
-// TestOutboxRelay_PublishesToKafka is a real integration test.
-// It requires a running Kafka broker at localhost:9092.
-// Skip with -short if the broker is not available.
-func TestOutboxRelay_PublishesToKafka(t *testing.T) {
+func stubDelivery(deliveryID, eventID uint) *domainModel.OutboxDelivery {
+	return &domainModel.OutboxDelivery{
+		ID:            deliveryID,
+		OutboxEventID: eventID,
+		Destination:   domainModel.OutboxDestinationKafka,
+		Status:        domainModel.OutboxDeliveryStatusPending,
+	}
+}
+
+func stubEvent(id uint) *domainModel.OutboxEvent {
+	return &domainModel.OutboxEvent{
+		ID:            id,
+		EventID:       "evt-abc123",
+		EventType:     domainModel.EventTypeTodoCreated,
+		AggregateType: "todo",
+		AggregateID:   "42",
+		Payload:       `{"title":"Buy milk"}`,
+		CreatedAt:     time.Now(),
+	}
+}
+
+// TestKafkaOutboxRelay_PublishesToKafka is a real integration test.
+// Requires a running Kafka broker at localhost:9092.
+func TestKafkaOutboxRelay_PublishesToKafka(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping Kafka integration test in short mode")
 	}
@@ -81,7 +100,6 @@ func TestOutboxRelay_PublishesToKafka(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// ── producer (kafka writer) ───────────────────────────────────────────────
 	writer := &kafka.Writer{
 		Addr:         kafka.TCP(testBroker),
 		Topic:        topic,
@@ -94,40 +112,32 @@ func TestOutboxRelay_PublishesToKafka(t *testing.T) {
 	producer := messaging.NewKafkaProducer(writer)
 	defer func() { _ = producer.Close() }()
 
-	// ── stub event ────────────────────────────────────────────────────────────
-	event := &domainModel.OutboxEvent{
-		ID:          1,
-		EventID:     "evt-abc123",
-		EventType:   domainModel.EventTypeTodoCreated,
-		AggregateID: "42",
-		Payload:     `{"title":"Buy milk"}`,
-		Status:      domainModel.OutboxStatusPending,
-		CreatedAt:   time.Now(),
-	}
+	delivery := stubDelivery(1, 10)
+	event := stubEvent(10)
 
-	// ── mock repo: one pending event, records MarkPublished calls ─────────────
 	marked := false
 	repo := &repoMock.OutboxRepositoryMock{
-		ListPendingFn: func(_ context.Context, _ int) ([]*domainModel.OutboxEvent, error) {
-			return []*domainModel.OutboxEvent{event}, nil
+		ListPendingDeliveriesFn: func(_ context.Context, _ string, _ int) ([]*domainModel.OutboxDelivery, error) {
+			return []*domainModel.OutboxDelivery{delivery}, nil
 		},
-		MarkPublishedFn: func(_ context.Context, id uint) error {
-			if id == event.ID {
+		GetEventByIDFn: func(_ context.Context, _ uint) (*domainModel.OutboxEvent, error) {
+			return event, nil
+		},
+		MarkDeliveryPublishedFn: func(_ context.Context, id uint) error {
+			if id == delivery.ID {
 				marked = true
 			}
 			return nil
 		},
 	}
 
-	// ── relay: single process() tick ─────────────────────────────────────────
-	relay := messaging.NewOutboxRelay(repo, producer)
+	relay := messaging.NewKafkaOutboxRelay(repo, producer)
 	relay.ProcessOnce(ctx)
 
 	if !marked {
-		t.Fatal("expected MarkPublished to be called after successful publish")
+		t.Fatal("expected MarkDeliveryPublished to be called after successful publish")
 	}
 
-	// ── consumer: verify the message landed in Kafka ──────────────────────────
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     []string{testBroker},
 		Topic:       topic,
@@ -166,33 +176,88 @@ func TestOutboxRelay_PublishesToKafka(t *testing.T) {
 	}
 }
 
-// TestOutboxRelay_PublishFailure_MarksEventFailed verifies that when the
-// publisher returns an error the relay calls MarkFailed instead of MarkPublished.
-// This test is broker-independent — it never touches Kafka.
-func TestOutboxRelay_PublishFailure_MarksEventFailed(t *testing.T) {
-	event := &domainModel.OutboxEvent{
-		ID: 7, EventID: "evt-fail", EventType: domainModel.EventTypeTodoUpdated,
-		AggregateID: "99", Payload: `{}`, Status: domainModel.OutboxStatusPending,
-	}
+// TestKafkaOutboxRelay_PublishFailure_LeavesDeliveryPending verifies that when
+// the publisher returns a transient error the relay leaves the delivery as
+// pending (no MarkDeliveryFailed call) so it will be retried on the next tick.
+// Broker-independent — never touches Kafka.
+func TestKafkaOutboxRelay_PublishFailure_LeavesDeliveryPending(t *testing.T) {
+	delivery := stubDelivery(7, 20)
+	event := stubEvent(20)
 
 	markedFailed := false
+	markedPublished := false
 	repo := &repoMock.OutboxRepositoryMock{
-		ListPendingFn: func(_ context.Context, _ int) ([]*domainModel.OutboxEvent, error) {
-			return []*domainModel.OutboxEvent{event}, nil
+		ListPendingDeliveriesFn: func(_ context.Context, _ string, _ int) ([]*domainModel.OutboxDelivery, error) {
+			return []*domainModel.OutboxDelivery{delivery}, nil
 		},
-		MarkFailedFn: func(_ context.Context, id uint) error {
-			if id == event.ID {
-				markedFailed = true
-			}
+		GetEventByIDFn: func(_ context.Context, _ uint) (*domainModel.OutboxEvent, error) {
+			return event, nil
+		},
+		MarkDeliveryFailedFn: func(_ context.Context, _ uint, _ string) error {
+			markedFailed = true
+			return nil
+		},
+		MarkDeliveryPublishedFn: func(_ context.Context, _ uint) error {
+			markedPublished = true
 			return nil
 		},
 	}
 
-	relay := messaging.NewOutboxRelay(repo, &failPublisher{})
+	relay := messaging.NewKafkaOutboxRelay(repo, &failPublisher{})
 	relay.ProcessOnce(context.Background())
 
-	if !markedFailed {
-		t.Fatal("expected MarkFailed to be called after publish error")
+	if markedFailed {
+		t.Fatal("relay must NOT call MarkDeliveryFailed on transient publish error — delivery should stay pending for retry")
+	}
+	if markedPublished {
+		t.Fatal("relay must NOT call MarkDeliveryPublished when publish failed")
+	}
+}
+
+// TestRabbitMQOutboxRelay_PublishFailure_LeavesDeliveryPending verifies the same
+// retry behaviour for the RabbitMQ relay. Broker-independent.
+func TestRabbitMQOutboxRelay_PublishFailure_LeavesDeliveryPending(t *testing.T) {
+	delivery := &domainModel.OutboxDelivery{
+		ID:            3,
+		OutboxEventID: 30,
+		Destination:   domainModel.OutboxDestinationRabbitMQ,
+		Status:        domainModel.OutboxDeliveryStatusPending,
+	}
+	event := &domainModel.OutboxEvent{
+		ID: 30, EventID: "evt-rmq-fail", EventType: domainModel.EventTypeTodoUpdated,
+		AggregateType: "todo", AggregateID: "99", Payload: `{}`,
+	}
+
+	markedFailed := false
+	markedPublished := false
+	repo := &repoMock.OutboxRepositoryMock{
+		ListPendingDeliveriesFn: func(_ context.Context, dest string, _ int) ([]*domainModel.OutboxDelivery, error) {
+			if dest == domainModel.OutboxDestinationRabbitMQ {
+				return []*domainModel.OutboxDelivery{delivery}, nil
+			}
+			return nil, nil
+		},
+		GetEventByIDFn: func(_ context.Context, _ uint) (*domainModel.OutboxEvent, error) {
+			return event, nil
+		},
+		MarkDeliveryFailedFn: func(_ context.Context, _ uint, _ string) error {
+			markedFailed = true
+			return nil
+		},
+		MarkDeliveryPublishedFn: func(_ context.Context, _ uint) error {
+			markedPublished = true
+			return nil
+		},
+	}
+
+	relay := messaging.NewRabbitMQOutboxRelay(repo, &failPublisher{})
+	relay.ProcessOnce(context.Background())
+
+	if markedFailed {
+		t.Fatal("relay must NOT call MarkDeliveryFailed on transient publish error — delivery should stay pending for retry")
+	}
+	if markedPublished {
+		t.Fatal("relay must NOT call MarkDeliveryPublished when publish failed")
 	}
 }
 

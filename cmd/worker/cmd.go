@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/yourname/go-clean-base/config"
 	"github.com/yourname/go-clean-base/container"
+	domainModel "github.com/yourname/go-clean-base/internal/domain/model"
 	workerPresentation "github.com/yourname/go-clean-base/internal/presentation/worker"
 	"github.com/yourname/go-clean-base/pkg/logger"
 	"golang.org/x/sync/errgroup"
@@ -17,7 +18,7 @@ import (
 func NewWorkerCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
-		Short: "Start outbox relay (Kafka) and event consumers (Kafka + RabbitMQ)",
+		Short: "Start outbox relays (Kafka + RabbitMQ) and event consumers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logger.Setup()
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -34,21 +35,27 @@ func NewWorkerCommand() *cobra.Command {
 			}
 			defer func() {
 				_ = c.DBClient.Close()
-				_ = c.RabbitMQClient.Close()
+				_ = c.RabbitMQPublisherClient.Close()
+			_ = c.RabbitMQConsumerClient.Close()
 				_ = c.KafkaConsumer.Close()
 				_ = c.KafkaProducer.Close()
 			}()
 
 			g, gCtx := errgroup.WithContext(ctx)
 
-			// goroutine 1: outbox relay → Kafka (domain event streaming)
+			// goroutine 1: outbox relay → Kafka
 			g.Go(func() error {
-				slog.Info("outbox relay starting (Kafka)")
-				c.OutboxRelay.Start(gCtx)
+				c.KafkaOutboxRelay.Start(gCtx)
 				return nil
 			})
 
-			// goroutine 2: Kafka consumer — analytics / audit log
+			// goroutine 2: outbox relay → RabbitMQ
+			g.Go(func() error {
+				c.RabbitMQOutboxRelay.Start(gCtx)
+				return nil
+			})
+
+			// goroutine 3: Kafka consumer — analytics / audit log
 			g.Go(func() error {
 				slog.Info("kafka consumer starting",
 					"topic", cfg.Messaging.KafkaTopic,
@@ -56,11 +63,13 @@ func NewWorkerCommand() *cobra.Command {
 				return c.KafkaConsumer.Start(gCtx, c.DomainEventHandler.Handle)
 			})
 
-			// goroutine 3: RabbitMQ notification consumer — send email / push
+			// goroutine 4: RabbitMQ notification consumer — binds todo.notifications queue
+			// to the todo.events exchange with routing key todo.created so it receives
+			// domain events published by RabbitMQOutboxRelay.
 			g.Go(func() error {
 				slog.Info("rabbitmq notification consumer starting")
 				if err := c.RabbitMQNotificationConsumer.Start(gCtx,
-					"todo.notifications", "todo.notifications", workerPresentation.HandleNotificationTask,
+					"todo.notifications", domainModel.EventTypeTodoCreated, workerPresentation.HandleNotificationTask,
 				); err != nil {
 					return err
 				}
@@ -73,4 +82,3 @@ func NewWorkerCommand() *cobra.Command {
 		},
 	}
 }
-

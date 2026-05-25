@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // RabbitMQConsumer subscribes to a RabbitMQ queue and dispatches each message
@@ -79,25 +82,59 @@ func (c *RabbitMQConsumer) Start(ctx context.Context, queueName string, routingK
 		return fmt.Errorf("consume queue %s: %w", queueName, err)
 	}
 
+	// setup declares the queue, binds it, and returns a new delivery channel.
+	setup := func() (<-chan amqp.Delivery, error) {
+		ch := c.client.channel
+		if err := ch.Qos(c.client.cfg.RabbitMQPrefetchCount, 0, false); err != nil {
+			return nil, fmt.Errorf("set qos: %w", err)
+		}
+		q, err := ch.QueueDeclare(queueName, true, false, false, false, nil)
+		if err != nil {
+			return nil, fmt.Errorf("declare queue %s: %w", queueName, err)
+		}
+		if err := ch.QueueBind(q.Name, routingKey, c.client.cfg.RabbitMQExchange, false, nil); err != nil {
+			return nil, fmt.Errorf("bind queue %s: %w", queueName, err)
+		}
+		return ch.Consume(q.Name, "", false, false, false, false, nil)
+	}
+
 	// Internal goroutine — runs for the lifetime of the worker.
+	// Reconnects automatically when the broker connection drops and recovers.
 	go func() {
+		deliveries := msgs
 		for {
 			select {
 			case <-ctx.Done():
-				// Graceful shutdown: stop consuming when context is cancelled.
 				return
-			case d, ok := <-msgs:
+			case d, ok := <-deliveries:
 				if !ok {
-					// Channel closed by broker (e.g. connection lost). Exit loop.
-					return
+					// Channel closed by broker (connection lost). Reconnect with backoff.
+					slog.WarnContext(ctx, "rabbitmq consumer channel closed, reconnecting", "queue", queueName)
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(3 * time.Second):
+						}
+						if err := c.client.Reconnect(); err != nil {
+							slog.ErrorContext(ctx, "rabbitmq consumer reconnect failed", "queue", queueName, "error", err)
+							continue
+						}
+						var err error
+						deliveries, err = setup()
+						if err != nil {
+							slog.ErrorContext(ctx, "rabbitmq consumer re-setup failed", "queue", queueName, "error", err)
+							continue
+						}
+						slog.InfoContext(ctx, "rabbitmq consumer reconnected", "queue", queueName)
+						break
+					}
+					continue
 				}
 				if err := handler(d.Body); err != nil {
 					slog.ErrorContext(ctx, "consumer handler failed, nacking", "queue", queueName, "error", err)
-					// NACK without requeue — avoids infinite retry loop on poison messages.
-					// Configure a dead-letter exchange on the queue to capture failed messages.
 					_ = d.Nack(false, false)
 				} else {
-					// ACK — broker removes the message from the queue permanently.
 					_ = d.Ack(false)
 				}
 			}

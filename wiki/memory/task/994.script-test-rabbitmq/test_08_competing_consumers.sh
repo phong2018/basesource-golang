@@ -3,9 +3,10 @@
 #   Proves RabbitMQ distributes messages across competing consumers:
 #   POST 4 todos → total notifications across both workers = 4, no duplicates.
 #
-#   Both workers are in the SAME Kafka consumer group so only one worker
-#   receives each Kafka event and publishes one notification to RabbitMQ.
-#   RabbitMQ then distributes the notification to whichever worker is free.
+#   Both workers run RabbitMQOutboxRelay independently, but only one relay
+#   picks up each pending delivery (row-level lock via SELECT FOR UPDATE).
+#   RabbitMQ then distributes each published notification to whichever
+#   NotificationConsumer worker is free — ensuring no duplicate handling.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"

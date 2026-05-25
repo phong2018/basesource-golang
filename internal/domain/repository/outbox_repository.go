@@ -7,8 +7,14 @@ import (
 )
 
 type IOutboxRepository interface {
-	Create(ctx context.Context, event *model.OutboxEvent) error
-	ListPending(ctx context.Context, limit int) ([]*model.OutboxEvent, error)
-	MarkPublished(ctx context.Context, id uint) error
-	MarkFailed(ctx context.Context, id uint) error
+	// write path — called inside a usecase transaction alongside the business write
+	CreateEventWithDeliveries(ctx context.Context, event *model.OutboxEvent, destinations []string) error
+
+	// relay read path — scoped per destination broker
+	ListPendingDeliveries(ctx context.Context, destination string, limit int) ([]*model.OutboxDelivery, error)
+	GetEventByID(ctx context.Context, id uint) (*model.OutboxEvent, error)
+
+	// relay update path
+	MarkDeliveryPublished(ctx context.Context, deliveryID uint) error
+	MarkDeliveryFailed(ctx context.Context, deliveryID uint, errMsg string) error
 }

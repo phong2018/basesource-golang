@@ -38,6 +38,7 @@ TESTS=(
   "test_02_update.sh"
   "test_03_delete.sh"
   "test_04_replay.sh"
+  "test_05_independent_relay.sh"
 )
 
 PASSED=0

@@ -56,7 +56,7 @@ wait_healthy kafka 90
 # ── 4. truncate DB tables ────────────────────────────────────────────────────
 info "truncating DB tables..."
 $COMPOSE exec -T db mysql -u appuser -papppass appdb -e \
-  "SET FOREIGN_KEY_CHECKS=0; TRUNCATE TABLE outbox_events; TRUNCATE TABLE audit_logs; TRUNCATE TABLE todos; SET FOREIGN_KEY_CHECKS=1;" \
+  "SET FOREIGN_KEY_CHECKS=0; TRUNCATE TABLE outbox_deliveries; TRUNCATE TABLE outbox_events; TRUNCATE TABLE audit_logs; TRUNCATE TABLE todos; SET FOREIGN_KEY_CHECKS=1;" \
   2>/dev/null
 pass "DB tables truncated"
 

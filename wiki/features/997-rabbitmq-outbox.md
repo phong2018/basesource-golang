@@ -15,14 +15,16 @@ The **outbox pattern** fixes this by writing the event inside the same DB transa
 ```
 // SAFE — outbox pattern
 tx.WithinTransaction():
-    INSERT todos            ┐
-    INSERT audit_logs       ├ one atomic transaction
-    INSERT outbox_events    ┘  status=pending
+    INSERT todos                ┐
+    INSERT audit_logs           ├ one atomic transaction
+    INSERT outbox_events        ┘
+    INSERT outbox_deliveries        (destination='rabbitmq', status=pending)
 
-(process can crash here — row is already in MySQL)
+(process can crash here — rows are already in MySQL)
 
 OutboxRelay wakes up every 2s:
-    SELECT pending rows → publish to RabbitMQ → mark published
+    SELECT outbox_deliveries WHERE destination='rabbitmq' AND status='pending'
+    → publish to RabbitMQ → mark delivery published
 ```
 
 ---
@@ -31,105 +33,98 @@ OutboxRelay wakes up every 2s:
 
 ```
 [API server process]                 [Worker process]
-─────────────────────                ──────────────────────────────────────
-POST /todos                          goroutine 1: OutboxRelay (publisher)
-  └─ usecase.Create()                  └─ every 2s:
-       └─ WithinTransaction()               SELECT outbox_events WHERE status=pending
-            ├─ INSERT todos                 publisher.Publish(event) → RabbitMQ
-            ├─ INSERT audit_logs            UPDATE outbox_events SET status=published
-            └─ INSERT outbox_events
-               status=pending        goroutine 2: RabbitMQConsumer
-                                       └─ queue: todo.events.worker
-                    ↕ MySQL                 handler(body) → log / process event
-                                           Ack() on success
-                    ↕ RabbitMQ             Nack() → dead-letter on failure
+─────────────────────                ──────────────────────────────────────────────
+POST /todos                          goroutine 1: KafkaOutboxRelay
+  └─ usecase.Create()                  └─ every 2s: processes kafka deliveries
+       └─ WithinTransaction()
+            ├─ INSERT todos          goroutine 2: RabbitMQOutboxRelay
+            ├─ INSERT audit_logs       └─ every 2s:
+            ├─ INSERT outbox_events         SELECT outbox_deliveries
+            └─ INSERT outbox_deliveries       WHERE destination='rabbitmq'
+               (kafka, pending)               AND status='pending'
+               (rabbitmq, pending)          publisher.Publish(event) → RabbitMQ
+                                            UPDATE status='published'
+                    ↕ MySQL
+                                       goroutine 3: KafkaConsumer
+                    ↕ RabbitMQ           └─ reads from Kafka topic
+
+                                       goroutine 4: RabbitMQNotificationConsumer
+                                          └─ queue: todo.notifications
+                                             handler(body) → log / process
+                                             Ack() on success
+                                             Nack(requeue=false) → dead-letter
 ```
 
 **Key rule:** the usecase writes only to MySQL. It never calls RabbitMQ directly. The relay worker is the only component that talks to the broker.
 
 ---
 
-## Publisher vs Consumer
+## Dual-broker delivery table
 
-### Publisher — the outbox relay
-
-The **publisher** is `OutboxRelay` running inside `cmd/worker`.
-
-- Polls `outbox_events WHERE status='pending'` every 2 seconds
-- Calls `rabbitmq_publisher.Publish(event)` → sends to exchange `todo.events` with routing key = `event.EventType` (e.g. `todo.created`)
-- On success: marks row `published`
-- On failure: marks row `failed`, logs the error
+Each `outbox_events` row has **one `outbox_deliveries` row per destination**. The relays are fully independent — a RabbitMQ failure does not affect Kafka delivery and vice versa.
 
 ```
-usecase.Create()
-    INSERT outbox_events (status=pending)   ← usecase writes here, NOT to RabbitMQ
+outbox_events
+  id=1, event_type=todo.created
 
-OutboxRelay (2s later)
-    SELECT status=pending
-    → rabbitmq_publisher.Publish()          ← THIS is the publisher
-    → UPDATE status=published
+outbox_deliveries
+  event_id=1, destination=kafka,    status=published
+  event_id=1, destination=rabbitmq, status=pending   ← retries independently
 ```
-
-### Consumer — the event handler
-
-The **consumer** is `RabbitMQConsumer` running inside `cmd/worker`.
-
-- Declares durable queue `todo.events.worker`, binds to exchange `todo.events` with routing key `#` (all events)
-- `prefetch=1` — processes one message at a time (fair dispatch)
-- Calls `handler(body)` for each message
-- Sends `Ack()` when handler succeeds → RabbitMQ removes the message
-- Sends `Nack(requeue=false)` when handler fails → message goes to dead-letter queue
-
-```
-RabbitMQ exchange: todo.events
-    │ routing key: todo.created / todo.updated / todo.deleted
-    ▼
-Queue: todo.events.worker
-    │
-    ▼
-RabbitMQConsumer
-    → handler(body) → log event (in real system: send email, update search index, etc.)
-    → Ack()
-```
-
-### How they relate
-
-```
-[API server]          [MySQL]          [RabbitMQ]          [Worker]
-     │                   │                  │                  │
-usecase.Create()         │                  │                  │
-  INSERT outbox_events ──▶                  │                  │
-                         │                  │            OutboxRelay polls
-                         ◀── SELECT pending │            every 2s
-                         │                  │                  │
-                         │           Publish(event) ──────────▶
-                         │                  │                  │
-                  mark published             │           Consumer receives
-                         │                  ◀────────────────── │
-                         │                  │             Ack() │
-```
-
-The publisher and consumer never talk to each other directly — only through RabbitMQ.
 
 ---
 
-## New files
+## Publisher vs Consumer
 
-| File | Purpose |
+### Publisher — the RabbitMQ outbox relay
+
+`RabbitMQOutboxRelay` is constructed with `NewRabbitMQOutboxRelay` in `container/container.go`.
+
+- Polls `outbox_deliveries WHERE destination='rabbitmq' AND status='pending'` every 2 seconds
+- Calls `rabbitmq_publisher.Publish(event)` → sends to exchange `todo.events` with routing key = `event.EventType` (e.g. `todo.created`)
+- On success: marks delivery `published`, records `published_at`, increments `attempt_count`
+- On failure: marks delivery `failed`, records `last_error`, increments `attempt_count`
+
+```
+usecase.Create()
+    INSERT outbox_events + outbox_deliveries (status=pending)   ← usecase writes here
+
+RabbitMQOutboxRelay (2s later)
+    SELECT delivery WHERE destination='rabbitmq' AND status='pending'
+    → GetEventByID()
+    → rabbitmq_publisher.Publish()
+    → MarkDeliveryPublished()
+```
+
+### Consumer — the notification handler
+
+`RabbitMQNotificationConsumer` runs in goroutine 4 of the worker.
+
+- Queue: `todo.notifications`
+- `prefetch=1` — processes one message at a time (fair dispatch)
+- Calls `HandleNotificationTask(body)` for each message
+- Sends `Ack()` when handler succeeds → RabbitMQ removes the message
+- Sends `Nack(requeue=false)` when handler fails → message goes to dead-letter queue
+
+---
+
+## Key files
+
+| File | Role |
 |---|---|
-| `cmd/worker/cmd.go` | `go run main.go worker` — starts relay + consumer with graceful shutdown via errgroup |
-| `internal/infrastructure/messaging/rabbitmq_connection.go` | Shared RabbitMQ connection + topic exchange declaration |
-| `internal/infrastructure/messaging/rabbitmq_publisher.go` | Implements `IEventPublisher` — publishes with persistent delivery mode |
-| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Declares durable queue, binds routing key, prefetch=1, ACK/NACK |
-| `internal/infrastructure/messaging/outbox_relay.go` | Polls `outbox_events` every 2s, publishes, marks published/failed |
-| `internal/infrastructure/repository/outbox_repository_impl.go` | DB CRUD for `outbox_events` table |
-| `internal/domain/model/event.go` | `OutboxEvent` entity + event type/status constants |
-| `internal/domain/repository/outbox_repository.go` | `IOutboxRepository` interface |
-| `internal/domain/service/event_publisher.go` | `IEventPublisher` interface |
+| `internal/domain/model/event.go` | `OutboxEvent` + `OutboxDelivery` entities |
+| `internal/domain/model/event_constant.go` | Destination constants (`kafka`, `rabbitmq`) + delivery status constants |
+| `internal/domain/repository/outbox_repository.go` | `IOutboxRepository` — 5-method interface |
 | `internal/domain/repository/mock/outbox_repository_mock.go` | Mock for unit tests |
+| `internal/infrastructure/repository/outbox_repository_impl.go` | DB impl: `CreateEventWithDeliveries`, `ListPendingDeliveries`, `GetEventByID`, `MarkDeliveryPublished`, `MarkDeliveryFailed` |
+| `internal/infrastructure/messaging/outbox_relay.go` | Generic `OutboxRelay` struct; `NewKafkaOutboxRelay` / `NewRabbitMQOutboxRelay` constructors |
+| `internal/infrastructure/messaging/rabbitmq_connection.go` | Shared RabbitMQ connection + topic exchange declaration |
+| `internal/infrastructure/messaging/rabbitmq_publisher.go` | `IEventPublisher` impl — persistent delivery mode |
+| `internal/infrastructure/messaging/rabbitmq_consumer.go` | Durable queue, routing key binding, prefetch=1, ACK/NACK |
+| `container/container.go` | Wires `KafkaOutboxRelay` + `RabbitMQOutboxRelay` independently |
+| `cmd/worker/cmd.go` | Starts 4 goroutines: kafka relay, rabbitmq relay, kafka consumer, rabbitmq consumer |
 | `db/migrations/20260524000003_create_outbox_events_table.sql` | Creates `outbox_events` table |
-
-Modified: `config/config.go`, `.env.example`, `docker/docker-compose.yaml`, `todo_usecase_impl.go`, `todo_usecase_impl_test.go`, `container/container.go`, `main.go`
+| `db/migrations/20260525000005_create_outbox_deliveries.sql` | Creates `outbox_deliveries` table |
 
 ---
 
@@ -137,34 +132,31 @@ Modified: `config/config.go`, `.env.example`, `docker/docker-compose.yaml`, `tod
 
 | | Value |
 |---|---|
-| Delivery guarantee | At-least-once — relay retries failed rows |
+| Delivery guarantee | At-least-once — relay retries failed delivery rows |
 | Latency | ~2s (configurable `relayInterval` in `outbox_relay.go`) |
 | Consumer requirement | Must be idempotent — use `event_id` (UUID) to deduplicate if needed |
-| RabbitMQ outage | API still works — events queue up in MySQL, catch up on recovery |
-| vs Kafka | RabbitMQ: push-based, message deleted after ACK. Kafka: pull-based, messages retained for replay |
+| RabbitMQ outage | API still works — deliveries queue up in MySQL, catch up on recovery |
+| Independent retry | Kafka failure does not block RabbitMQ delivery and vice versa |
+| vs direct publish | Direct publish after `tx.Commit()` loses the event on crash; outbox survives |
 
 ---
 
 ## Running locally
 
 ```bash
-# 1. Add RabbitMQ vars to .env
-echo "RABBITMQ_URL=amqp://guest:guest@localhost:5672/" >> .env
-echo "RABBITMQ_EXCHANGE=todo.events" >> .env
+# 1. Start DB + RabbitMQ + Kafka
+docker compose -f docker/docker-compose.yaml up -d db rabbitmq kafka
 
-# 2. Start DB + RabbitMQ
-docker compose -f docker/docker-compose.yaml up -d db rabbitmq
-
-# 3. Run migrations (creates outbox_events table)
+# 2. Run migrations
 go run main.go migrate
 
-# 4. Build binary (ensures both processes use same compiled code)
+# 3. Build binary
 go build -o /tmp/app .
 
 # Terminal 1 — HTTP API server
 /tmp/app api
 
-# Terminal 2 — worker (relay + consumer)
+# Terminal 2 — worker (both relays + both consumers)
 /tmp/app worker
 ```
 
@@ -176,10 +168,7 @@ RabbitMQ management UI: http://localhost:15672 (guest / guest)
 
 ### Scenario 1 — Happy path: full flow end-to-end
 
-**Verify:** API → MySQL outbox → relay publishes → consumer receives.
-
 ```bash
-# Create a todo
 curl -s -X POST http://localhost:8080/api/v1/todos \
   -H "Content-Type: application/json" \
   -d '{"title":"Buy milk"}'
@@ -188,156 +177,78 @@ curl -s -X POST http://localhost:8080/api/v1/todos \
 What happens step by step:
 ```
 1. API returns 201 immediately
-2. In MySQL: outbox_events row with status=pending
-3. (2s later) relay wakes up → publishes to RabbitMQ → status=published
-4. Consumer receives message → logs it → ACK
+2. MySQL: outbox_events row + two outbox_deliveries rows (kafka=pending, rabbitmq=pending)
+3. (~2s) KafkaOutboxRelay publishes → kafka delivery=published
+4. (~2s) RabbitMQOutboxRelay publishes → rabbitmq delivery=published
+5. RabbitMQ NotificationConsumer receives message → logs it → ACK
 ```
 
-Check outbox table after ~3 seconds:
+Check delivery table after ~3 seconds:
 ```bash
 docker compose -f docker/docker-compose.yaml exec db \
   mysql -uappuser -papppass appdb \
-  -e "SELECT event_type, aggregate_id, status, published_at FROM outbox_events ORDER BY id;" \
+  -e "SELECT e.event_type, d.destination, d.status, d.published_at FROM outbox_events e JOIN outbox_deliveries d ON d.outbox_event_id = e.id ORDER BY e.id, d.destination;" \
   2>/dev/null | grep -v Warning
 ```
 
 Expected:
 ```
-event_type    aggregate_id  status     published_at
-todo.created  1             published  2026-05-24 ...
+event_type    destination  status     published_at
+todo.created  kafka        published  2026-05-25 ...
+todo.created  rabbitmq     published  2026-05-25 ...
 ```
 
 Worker log expected:
 ```json
-{"msg":"event received","event_type":"todo.created","aggregate_id":"1"}
+{"msg":"notification task received","to":"admin@example.com","subject":"New Todo Created"}
+{"msg":"domain event received","event_type":"todo.created","aggregate_id":"1"}
 ```
 
 ---
 
-### Scenario 2 — All three event types (Create / Update / Delete)
-
-**Verify:** each operation produces the correct event type.
+### Scenario 2 — Worker goes down: events queue up in MySQL, catch up on restart
 
 ```bash
-# Create
-curl -s -X POST http://localhost:8080/api/v1/todos \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Test event types"}'
-# note the id returned, e.g. 5
-
-# Update
-curl -s -X PUT http://localhost:8080/api/v1/todos/5 \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Updated","done":true}'
-
-# Delete
-curl -s -X DELETE http://localhost:8080/api/v1/todos/5
-```
-
-Worker log expected (in order):
-```json
-{"msg":"event received","event_type":"todo.created","aggregate_id":"5"}
-{"msg":"event received","event_type":"todo.updated","aggregate_id":"5"}
-{"msg":"event received","event_type":"todo.deleted","aggregate_id":"5"}
-```
-
-DB expected:
-```
-event_type    status
-todo.created  published
-todo.updated  published
-todo.deleted  published
-```
-
----
-
-### Scenario 3 — Worker goes down: events queue up in MySQL, catch up on restart
-
-**Verify:** publisher crash does not lose events.
-
-```bash
-# 1. Stop the worker (Ctrl+C in Terminal 2)
+# 1. Stop the worker
+pkill -f "/tmp/app worker"
 
 # 2. Create a todo — API still works
 curl -s -X POST http://localhost:8080/api/v1/todos \
   -H "Content-Type: application/json" \
   -d '{"title":"Created while worker is down"}'
-# → 201 ← API unaffected
+# → 201
 
-# 3. Check DB — event is pending, not lost
+# 3. Check DB — deliveries are pending, not lost
 docker compose -f docker/docker-compose.yaml exec db \
   mysql -uappuser -papppass appdb \
-  -e "SELECT event_type, status FROM outbox_events ORDER BY id DESC LIMIT 1;" \
+  -e "SELECT destination, status FROM outbox_deliveries ORDER BY id DESC LIMIT 2;" \
   2>/dev/null | grep -v Warning
-# status: pending ← safely stored
+# kafka=pending, rabbitmq=pending
 
 # 4. Restart the worker
 /tmp/app worker
 
-# 5. Within 2s relay catches up — check DB again
-# status: published ← relay published the queued event
+# 5. Within 2s both relays catch up — both deliveries become published
 ```
-
-**What this proves:** the outbox pattern gives durable at-least-once delivery. Direct `broker.Publish()` after `tx.Commit()` would permanently lose the event if the process crashes in between.
 
 ---
 
-### Scenario 4 — RabbitMQ goes down: API still works, events catch up on recovery
-
-**Verify:** RabbitMQ outage does not affect the API or data integrity.
+### Scenario 3 — RabbitMQ goes down: Kafka unaffected, catches up on recovery
 
 ```bash
 # 1. Stop RabbitMQ
 docker compose -f docker/docker-compose.yaml stop rabbitmq
 
 # 2. Create a todo — API still returns 201
-curl -s -X POST http://localhost:8080/api/v1/todos \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Created during RabbitMQ outage"}'
-# → 201 ← MySQL transaction committed fine
 
-# 3. Worker logs relay errors but keeps retrying every 2s
-# {"msg":"outbox relay: list pending failed","error":"...connection refused"}
+# 3. KafkaOutboxRelay publishes its delivery successfully
+#    RabbitMQOutboxRelay logs error, rabbitmq delivery stays pending
 
 # 4. Restart RabbitMQ
 docker compose -f docker/docker-compose.yaml start rabbitmq
 
-# 5. Within 2s relay publishes all pending rows
-# {"msg":"event received","event_type":"todo.created","aggregate_id":"..."}
+# 5. Within 2s RabbitMQOutboxRelay publishes the pending delivery
 ```
-
-**What this proves:** the API and outbox table are completely isolated from RabbitMQ availability. Users never see errors during broker outages. Compare to direct HTTP call to a notification service — that would return 500 to the user during an outage.
-
----
-
-### Scenario 5 — Multiple worker instances share the load (consumer group)
-
-**Verify:** horizontal scaling — each message is processed by exactly one worker.
-
-```bash
-# Start 3 worker instances (each connects to the same queue)
-/tmp/app worker   # Terminal 2
-/tmp/app worker   # Terminal 3
-/tmp/app worker   # Terminal 4
-
-# Create 9 todos rapidly
-for i in $(seq 1 9); do
-  curl -s -X POST http://localhost:8080/api/v1/todos \
-    -H "Content-Type: application/json" \
-    -d "{\"title\":\"Todo $i\"}" &
-done
-wait
-```
-
-Expected: 9 events distributed across 3 terminals (~3 each). Each event appears in exactly one terminal — not all three.
-
-```
-Terminal 2: event received aggregate_id=1,4,7
-Terminal 3: event received aggregate_id=2,5,8
-Terminal 4: event received aggregate_id=3,6,9
-```
-
-**What this proves:** RabbitMQ round-robins messages across consumers connected to the same queue. Adding more workers scales throughput — no code change needed anywhere.
 
 ---
 
@@ -348,7 +259,7 @@ go test ./internal/usecase/...
 # ok  github.com/yourname/go-clean-base/internal/usecase
 ```
 
-The usecase tests use `OutboxRepositoryMock` — no real DB or RabbitMQ needed. The mock is in `internal/domain/repository/mock/outbox_repository_mock.go`.
+The usecase tests use `OutboxRepositoryMock` — no real DB or RabbitMQ needed.
 
 ---
 
