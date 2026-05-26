@@ -25,6 +25,7 @@ spec:
               value: appuser
             - name: MYSQL_PASSWORD
               value: apppass
+          args: ["--max-connections=500"]
           ports:
             - containerPort: 3306
           readinessProbe:
