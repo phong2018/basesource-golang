@@ -1,6 +1,6 @@
 # T2 — Domain Layer: Auth Models & Interfaces
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T1 (migration must exist first for context, though domain has no DB dependency)

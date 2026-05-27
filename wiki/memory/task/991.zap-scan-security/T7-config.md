@@ -1,6 +1,6 @@
 # T7 — Config: JWT Environment Variables
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - None (standalone)

@@ -1,6 +1,6 @@
 # T5 — Presentation Layer: Auth Middleware, Handler & Routes
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T3 (IAuthUsecase interface)

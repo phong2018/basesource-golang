@@ -34,7 +34,10 @@ func NewAPICommand() *cobra.Command {
 			defer func() { _ = c.DBClient.Close() }()
 
 			server := apphttp.NewServer(apphttp.Dependencies{
-				TodoUsecase: c.TodoUsecase,
+				TodoUsecase:      c.TodoUsecase,
+				AuthUsecase:      c.AuthUsecase,
+				TodoOwnedUsecase: c.TodoOwnedUsecase,
+				TokenService:     c.TokenService,
 			})
 			slog.Info("server starting", "port", cfg.AppPort)
 			return server.Start(":" + cfg.AppPort)

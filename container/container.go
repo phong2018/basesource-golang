@@ -10,6 +10,7 @@ import (
 	"github.com/yourname/go-clean-base/internal/infrastructure/messaging"
 	infraRepo "github.com/yourname/go-clean-base/internal/infrastructure/repository"
 	s3client "github.com/yourname/go-clean-base/internal/infrastructure/s3"
+	infraToken "github.com/yourname/go-clean-base/internal/infrastructure/token"
 	workerPresentation "github.com/yourname/go-clean-base/internal/presentation/worker"
 	"github.com/yourname/go-clean-base/internal/usecase"
 )
@@ -42,7 +43,10 @@ type Container struct {
 	S3Client           service.IFileStorage
 
 	// Usecase layer
-	TodoUsecase usecase.ITodoUsecase
+	TodoUsecase      usecase.ITodoUsecase
+	AuthUsecase      usecase.IAuthUsecase
+	TodoOwnedUsecase usecase.ITodoOwnedUsecase
+	TokenService     service.ITokenService
 }
 
 func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
@@ -94,6 +98,14 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		todoRepo, auditLogRepo, outboxRepo, db, notifier,
 	)
 
+	// ── Auth ──────────────────────────────────────────────────────────────────
+	tokenSvc         := infraToken.NewJWTTokenService(cfg.JWT.Secret, cfg.JWT.AccessTTLMinutes)
+	userRepo         := infraRepo.NewUserRepository(db)
+	todoOwnedRepo    := infraRepo.NewTodoOwnedRepository(db)
+	todoCommentRepo  := infraRepo.NewTodoCommentRepository(db)
+	authUsecase      := usecase.NewAuthUsecase(userRepo, tokenSvc)
+	todoOwnedUsecase := usecase.NewTodoOwnedUsecase(todoOwnedRepo, userRepo, todoCommentRepo)
+
 	return &Container{
 		Cfg:      cfg,
 		DBClient: db,
@@ -113,6 +125,9 @@ func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
 		NotificationClient: notifier,
 		S3Client:           s3,
 
-		TodoUsecase: todoUsecase,
+		TodoUsecase:      todoUsecase,
+		AuthUsecase:      authUsecase,
+		TodoOwnedUsecase: todoOwnedUsecase,
+		TokenService:     tokenSvc,
 	}, nil
 }

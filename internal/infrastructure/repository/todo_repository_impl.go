@@ -20,7 +20,7 @@ func NewTodoRepository(db *database.Client) domainRepo.ITodoRepository {
 
 func (r *todoRepository) GetByID(ctx context.Context, id uint) (*domainModel.Todo, error) {
 	var todo domainModel.Todo
-	err := r.conn(ctx).GetContext(ctx, &todo, "SELECT * FROM todos WHERE id = ?", id)
+	err := r.conn(ctx).GetContext(ctx, &todo, "SELECT id, title, description, done, created_at, updated_at FROM todos WHERE id = ?", id)
 	if err == sql.ErrNoRows {
 		return nil, domainModel.ErrTodoNotFound
 	}
@@ -31,7 +31,7 @@ func (r *todoRepository) GetByID(ctx context.Context, id uint) (*domainModel.Tod
 }
 
 func (r *todoRepository) List(ctx context.Context, filter domainModel.TodoFilter, page domainModel.Pagination) ([]*domainModel.Todo, error) {
-	query := "SELECT * FROM todos WHERE 1=1"
+	query := "SELECT id, title, description, done, created_at, updated_at FROM todos WHERE 1=1"
 	args := []any{}
 
 	if filter.Done != nil {

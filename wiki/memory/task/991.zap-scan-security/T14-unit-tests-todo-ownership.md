@@ -1,6 +1,6 @@
 # T14 — Unit Tests: Todo Ownership Usecase
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T11 (todo_owned_usecase_impl)

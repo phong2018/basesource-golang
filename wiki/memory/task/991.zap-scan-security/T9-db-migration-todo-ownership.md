@@ -1,6 +1,6 @@
 # T9 — DB Migration: Todo Ownership, Shares & Comments
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T1 (users table must exist — foreign key reference)

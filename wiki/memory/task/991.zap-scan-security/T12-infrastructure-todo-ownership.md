@@ -1,6 +1,6 @@
 # T12 — Infrastructure Layer: Todo Ownership Repositories
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T9 (DB tables must exist)

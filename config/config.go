@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -13,6 +14,13 @@ type Config struct {
 	AWS          AWSConfig
 	Notification NotificationConfig
 	Messaging    MessagingConfig
+	JWT          JWTConfig
+}
+
+type JWTConfig struct {
+	Secret           string
+	AccessTTLMinutes int
+	RefreshTTLDays   int
 }
 
 type DatabaseConfig struct {
@@ -68,6 +76,11 @@ func NewConfig() (*Config, error) {
 			KafkaTopic:            getEnv("KAFKA_TOPIC", "todo-events"),
 			KafkaGroupID:          getEnv("KAFKA_GROUP_ID", "todo-worker"),
 		},
+		JWT: JWTConfig{
+			Secret:           getEnv("JWT_SECRET", ""),
+			AccessTTLMinutes: getEnvInt("JWT_ACCESS_TTL_MINUTES", 15),
+			RefreshTTLDays:   getEnvInt("JWT_REFRESH_TTL_DAYS", 7),
+		},
 	}, nil
 }
 
@@ -76,4 +89,16 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }

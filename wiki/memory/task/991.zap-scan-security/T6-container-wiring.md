@@ -1,6 +1,6 @@
 # T6 — Container Wiring
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T3 (IAuthUsecase)

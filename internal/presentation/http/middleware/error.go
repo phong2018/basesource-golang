@@ -26,11 +26,18 @@ func ErrorHandler() echo.MiddlewareFunc {
 				return nil
 			}
 			var appErr *apperror.AppError
+			var echoErr *echo.HTTPError
 			switch {
 			case errors.As(err, &appErr):
 				// already an AppError
 			case errors.Is(err, domainModel.ErrTodoNotFound):
 				appErr = apperror.NotFound(err.Error())
+			case errors.As(err, &echoErr):
+				msg, _ := echoErr.Message.(string)
+				if msg == "" {
+					msg = http.StatusText(echoErr.Code)
+				}
+				appErr = apperror.New(echoErr.Code, msg, nil)
 			default:
 				appErr = apperror.Internal(err)
 			}

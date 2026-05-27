@@ -24,3 +24,6 @@ func New(code int, message string, err error) *AppError {
 func NotFound(message string) *AppError     { return New(404, message, nil) }
 func BadRequest(message string) *AppError   { return New(400, message, nil) }
 func Internal(err error) *AppError          { return New(500, "internal server error", err) }
+func Unauthorized(message string) *AppError { return New(401, message, nil) }
+func Conflict(message string) *AppError     { return New(409, message, nil) }
+func Forbidden(message string) *AppError    { return New(403, message, nil) }

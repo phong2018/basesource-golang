@@ -17,8 +17,6 @@ echo "========================================="
 # ── step 1: create a fresh todo ──────────────────────────────────────────────
 echo ""
 echo "--- Step 1: POST /api/v1/todos (setup)"
-NOTIF_BEFORE=$(worker_log_count '"notification task received"')
-
 RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$API/api/v1/todos" \
   -H "Content-Type: application/json" \
   -d '{"title":"T03 K8s delete"}')
@@ -31,12 +29,7 @@ TODO_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)
 
 # wait for create notification to drain
 wait_for_delivery "$TODO_ID" "todo.created" "rabbitmq" "published" 15
-for i in $(seq 1 15); do
-  CNT=$(worker_log_count '"notification task received"')
-  [ "$CNT" -gt "$NOTIF_BEFORE" ] && break
-  [ $i -eq 15 ] && fail "setup (create) notification never arrived within 15s"
-  sleep 1
-done
+wait_for_worker_log_agg "$TODO_ID" "todo.created" 15
 NOTIF_BEFORE_DELETE=$(worker_log_count '"notification task received"')
 
 # ── step 2: DELETE todo ───────────────────────────────────────────────────────

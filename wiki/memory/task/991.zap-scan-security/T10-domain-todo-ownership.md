@@ -1,6 +1,6 @@
 # T10 — Domain Layer: Todo Ownership Models & Interfaces
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T2 (existing domain conventions established)

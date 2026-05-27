@@ -1,6 +1,6 @@
 # T8 — Unit Tests: Auth Usecase & JWT Middleware
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T3 (auth_usecase_impl)

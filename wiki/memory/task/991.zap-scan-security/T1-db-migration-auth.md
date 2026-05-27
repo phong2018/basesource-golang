@@ -1,6 +1,6 @@
 # T1 — DB Migration: Auth Tables
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Scope constraint
 Additive only. No existing migration files are modified.

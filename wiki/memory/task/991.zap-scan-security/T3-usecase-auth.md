@@ -1,6 +1,6 @@
 # T3 — Usecase Layer: Auth
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T2 (domain models and interfaces must exist)

@@ -21,8 +21,6 @@ READY=$(kubectl -n "$NS" get deployment basesource-worker \
 [ "$READY" -ge 1 ] && pass "worker pods ready: $READY" || \
   fail "no worker pods ready — run reset.sh first"
 
-NOTIF_BEFORE=$(worker_log_count '"notification task received"')
-
 # ── step 2: POST a todo ───────────────────────────────────────────────────────
 echo ""
 echo "--- Step 2: POST todo"
@@ -43,14 +41,7 @@ wait_for_delivery "$TODO_ID" "todo.created" "rabbitmq" "published" 15
 # ── step 4: notification received by worker ───────────────────────────────────
 echo ""
 echo "--- Step 4: notification task received by worker"
-for i in $(seq 1 30); do
-  COUNT=$(worker_log_count '"notification task received"')
-  if [ "$COUNT" -gt "$NOTIF_BEFORE" ]; then
-    pass "notification received (total: $COUNT)"; break
-  fi
-  [ $i -eq 30 ] && fail "notification not received within 30s"
-  sleep 1
-done
+wait_for_worker_log_agg "$TODO_ID" "todo.created" 30
 
 # ── step 5: queue empty (message was ACKed) ───────────────────────────────────
 echo ""

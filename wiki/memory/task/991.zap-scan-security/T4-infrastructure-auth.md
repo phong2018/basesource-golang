@@ -1,6 +1,6 @@
 # T4 — Infrastructure Layer: User Repository & JWT Token Service
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T2 (domain interfaces to implement)

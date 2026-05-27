@@ -29,6 +29,10 @@ info "truncating DB tables..."
 db_exec "SET FOREIGN_KEY_CHECKS=0; TRUNCATE TABLE outbox_deliveries; TRUNCATE TABLE outbox_events; TRUNCATE TABLE audit_logs; TRUNCATE TABLE todos; SET FOREIGN_KEY_CHECKS=1;"
 pass "DB tables truncated"
 
+info "purging RabbitMQ queue (removes leftover messages from K6/previous runs)..."
+kubectl -n "$NS" exec "$(rmq_pod)" -- rabbitmqctl purge_queue todo.notifications > /dev/null 2>&1 || true
+pass "RabbitMQ queue purged"
+
 info "restarting worker pods (clears in-memory relay state)..."
 restart_worker
 pass "worker pods restarted"

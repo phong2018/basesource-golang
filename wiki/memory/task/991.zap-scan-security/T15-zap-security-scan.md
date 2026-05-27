@@ -1,6 +1,6 @@
 # T15 — OWASP ZAP Security Scan
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T1–T14 complete and server running

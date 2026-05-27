@@ -1,6 +1,6 @@
 # T11 — Usecase Layer: Todo Ownership
 
-**Status:** [ ] Not started
+**Status:** [x] Done
 
 ## Depends on
 - T10 (ITodoOwnedRepository, ITodoCommentRepository, OwnedTodo model)
