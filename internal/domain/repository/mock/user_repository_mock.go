@@ -9,8 +9,10 @@ import (
 )
 
 type UserRepositoryMock struct {
-	FindByEmailFn       func(ctx context.Context, email string) (*domainModel.User, error)
-	FindByIDFn          func(ctx context.Context, id int64) (*domainModel.User, error)
+	FindByEmailFn        func(ctx context.Context, email string) (*domainModel.User, error)
+	FindByEmailSortedFn  func(ctx context.Context, email, sortBy string) (*domainModel.User, error)
+	FindAllSortedFn      func(ctx context.Context, sortBy string) ([]*domainModel.User, error)
+	FindByIDFn           func(ctx context.Context, id int64) (*domainModel.User, error)
 	CreateFn            func(ctx context.Context, user *domainModel.User) error
 	SaveRefreshTokenFn  func(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error
 	FindRefreshTokenFn  func(ctx context.Context, tokenHash string) (*domainModel.RefreshToken, error)
@@ -21,6 +23,12 @@ var _ domainRepo.IUserRepository = (*UserRepositoryMock)(nil)
 
 func (m *UserRepositoryMock) FindByEmail(ctx context.Context, email string) (*domainModel.User, error) {
 	return m.FindByEmailFn(ctx, email)
+}
+func (m *UserRepositoryMock) FindByEmailSorted(ctx context.Context, email, sortBy string) (*domainModel.User, error) {
+	return m.FindByEmailSortedFn(ctx, email, sortBy)
+}
+func (m *UserRepositoryMock) FindAllSorted(ctx context.Context, sortBy string) ([]*domainModel.User, error) {
+	return m.FindAllSortedFn(ctx, sortBy)
 }
 func (m *UserRepositoryMock) FindByID(ctx context.Context, id int64) (*domainModel.User, error) {
 	return m.FindByIDFn(ctx, id)

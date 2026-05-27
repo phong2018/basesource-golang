@@ -80,6 +80,8 @@ func NewServer(deps Dependencies) *echo.Echo {
 	my.DELETE("/:id/share/:uid", ownedHandler.RevokeShare)
 	my.POST("/:id/attachment", ownedHandler.UploadAttachment)
 	my.DELETE("/:id/attachment", ownedHandler.DeleteAttachment)
+	my.DELETE("", ownedHandler.DeleteMineWhere)
+	my.PATCH("/:id/field", ownedHandler.UpdateMineField)
 
 	// ── Admin bulk operations ─────────────────────────────────────────────────
 	adminHandler := handler.NewTodoAdminHandler(deps.TodoOwnedUsecase)

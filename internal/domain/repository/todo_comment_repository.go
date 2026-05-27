@@ -8,6 +8,7 @@ import (
 
 type ITodoCommentRepository interface {
 	List(ctx context.Context, todoID uint) ([]*model.TodoComment, error)
+	ListSorted(ctx context.Context, todoID uint, orderBy string) ([]*model.TodoComment, error)
 	Create(ctx context.Context, comment *model.TodoComment) error
 	FindByID(ctx context.Context, id uint) (*model.TodoComment, error)
 	Delete(ctx context.Context, id uint) error

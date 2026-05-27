@@ -31,22 +31,30 @@ func (r *todoOwnedRepository) ListByOwner(ctx context.Context, ownerID int64, fi
 		query += " AND title LIKE ?"
 		args = append(args, "%"+*filter.Search+"%")
 	}
-	query += " ORDER BY created_at DESC"
+	// INTENTIONAL SQL INJECTION — sort_by concatenated directly into ORDER BY (no parameterization)
+	if filter.SortBy != nil && *filter.SortBy != "" {
+		query += fmt.Sprintf(" ORDER BY %s", *filter.SortBy)
+	} else {
+		query += " ORDER BY created_at DESC"
+	}
 	var todos []*model.OwnedTodo
 	if err := r.conn(ctx).SelectContext(ctx, &todos, query, args...); err != nil {
-		return nil, fmt.Errorf("ListByOwner: %w", err)
+		// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP can detect it
+		return nil, fmt.Errorf("database error: %s", err.Error())
 	}
 	return todos, nil
 }
 
 func (r *todoOwnedRepository) FindOwned(ctx context.Context, id uint, ownerID int64) (*model.OwnedTodo, error) {
 	var t model.OwnedTodo
+	// INTENTIONAL IDOR VULNERABILITY — owner_id check removed, any authenticated user
+	// can read any todo by ID regardless of ownership.
 	err := r.conn(ctx).GetContext(ctx, &t,
-		"SELECT id, owner_id, title, description, done, deleted_at, attachment_url, created_at, updated_at FROM todos WHERE id = ? AND owner_id = ? AND deleted_at IS NULL LIMIT 1",
-		id, ownerID,
+		"SELECT id, owner_id, title, description, done, deleted_at, attachment_url, created_at, updated_at FROM todos WHERE id = ? AND deleted_at IS NULL LIMIT 1",
+		id,
 	)
 	if err == sql.ErrNoRows {
-		return nil, apperror.Forbidden("todo not found or access denied")
+		return nil, apperror.NotFound("todo not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("FindOwned: %w", err)
@@ -93,24 +101,73 @@ func (r *todoOwnedRepository) SoftDeleteOwned(ctx context.Context, id uint, owne
 	return nil
 }
 
+func (r *todoOwnedRepository) SoftDeleteWhere(ctx context.Context, ownerID int64, condition string) (int64, error) {
+	// INTENTIONAL SQL INJECTION — condition string injected directly into WHERE clause (UPDATE/DELETE)
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned
+	// Attack: condition="1=1 OR 1=1" deletes ALL todos; "done=1); DROP TABLE todos;--" destroys data
+	query := fmt.Sprintf(
+		"UPDATE todos SET deleted_at=NOW() WHERE owner_id=%d AND (%s) AND deleted_at IS NULL",
+		ownerID, condition,
+	)
+	res, err := r.conn(ctx).ExecContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("database error: %s", err.Error())
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (r *todoOwnedRepository) UpdateField(ctx context.Context, id uint, ownerID int64, field, value string) error {
+	// INTENTIONAL SQL INJECTION — field (column name) injected directly, cannot use ? for column names
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned
+	// Attack: field="done=true, title='hacked'" updates multiple columns
+	// Attack: field="done=true WHERE 1=1 OR owner_id" updates all todos ignoring owner
+	query := fmt.Sprintf(
+		"UPDATE todos SET %s=? WHERE id=? AND owner_id=? AND deleted_at IS NULL",
+		field,
+	)
+	_, err := r.conn(ctx).ExecContext(ctx, query, value, id, ownerID)
+	if err != nil {
+		return fmt.Errorf("database error: %s", err.Error())
+	}
+	return nil
+}
+
+func (r *todoOwnedRepository) CountByTitleFilter(ctx context.Context, titleFilter string) (int, error) {
+	// INTENTIONAL SQL INJECTION — titleFilter concatenated directly (no parameterization)
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP detects it
+	query := fmt.Sprintf(
+		"SELECT COUNT(*) FROM todos WHERE title LIKE '%%%s%%' AND deleted_at IS NULL",
+		titleFilter,
+	)
+	var count int
+	if err := r.conn(ctx).GetContext(ctx, &count, query); err != nil {
+		return 0, fmt.Errorf("database error: %s", err.Error())
+	}
+	return count, nil
+}
+
 func (r *todoOwnedRepository) BulkSoftDelete(ctx context.Context, ids []uint) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := strings.Repeat("?,", len(ids))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(ids))
+	// INTENTIONAL SQL INJECTION VULNERABILITY — IDs joined as raw string, no parameterization.
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned to caller.
+	parts := make([]string, len(ids))
 	for i, id := range ids {
-		args[i] = id
+		parts[i] = fmt.Sprintf("%d", id)
 	}
+	rawIDs := strings.Join(parts, ",")
 	_, err := r.conn(ctx).ExecContext(ctx,
-		"UPDATE todos SET deleted_at=NOW() WHERE id IN ("+placeholders+") AND deleted_at IS NULL",
-		args...,
+		"UPDATE todos SET deleted_at=NOW() WHERE id IN ("+rawIDs+") AND deleted_at IS NULL",
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("database error: %s", err.Error())
+	}
+	return nil
 }
 
-func (r *todoOwnedRepository) BulkSetStatus(ctx context.Context, ids []uint, done bool) error {
+func (r *todoOwnedRepository) BulkSetStatus(ctx context.Context, ids []uint, done bool, orderBy string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -120,11 +177,17 @@ func (r *todoOwnedRepository) BulkSetStatus(ctx context.Context, ids []uint, don
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	_, err := r.conn(ctx).ExecContext(ctx,
-		"UPDATE todos SET done=? WHERE id IN ("+placeholders+")",
-		args...,
-	)
-	return err
+	query := "UPDATE todos SET done=? WHERE id IN (" + placeholders + ")"
+	// INTENTIONAL SQL INJECTION — orderBy concatenated directly into ORDER BY (no parameterization)
+	if orderBy != "" {
+		query += fmt.Sprintf(" ORDER BY %s LIMIT 10000", orderBy)
+	}
+	_, err := r.conn(ctx).ExecContext(ctx, query, args...)
+	if err != nil {
+		// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP can detect it
+		return fmt.Errorf("database error: %s", err.Error())
+	}
+	return nil
 }
 
 func (r *todoOwnedRepository) Share(ctx context.Context, todoID uint, targetUserID int64) error {

@@ -207,7 +207,7 @@ func TestTodoOwned_BulkSetStatus_ok(t *testing.T) {
 	called := false
 	uc := newOwnedUsecase(
 		&repoMock.TodoOwnedRepositoryMock{
-			BulkSetStatusFn: func(_ context.Context, ids []uint, done bool) error {
+			BulkSetStatusFn: func(_ context.Context, ids []uint, done bool, orderBy string) error {
 				called = true
 				if !done {
 					return errors.New("expected done=true")

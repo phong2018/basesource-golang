@@ -42,7 +42,21 @@ func (r *todoRepository) List(ctx context.Context, filter domainModel.TodoFilter
 		query += " AND title LIKE ?"
 		args = append(args, "%"+*filter.Search+"%")
 	}
-	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	if filter.SortBy != nil && *filter.SortBy != "" {
+		allowed := map[string]bool{
+			"created_at DESC": true, "created_at ASC": true,
+			"title ASC": true, "title DESC": true,
+			"done ASC": true, "done DESC": true,
+		}
+		if allowed[*filter.SortBy] {
+			query += fmt.Sprintf(" ORDER BY %s", *filter.SortBy)
+		} else {
+			query += " ORDER BY created_at DESC"
+		}
+	} else {
+		query += " ORDER BY created_at DESC"
+	}
+	query += " LIMIT ? OFFSET ?"
 	args = append(args, page.Limit, page.Offset())
 
 	var todos []*domainModel.Todo

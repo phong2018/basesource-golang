@@ -38,6 +38,29 @@ func (u *authUsecase) Register(ctx context.Context, req dto.RegisterRequest) err
 	})
 }
 
+func (u *authUsecase) RegisterWithSort(ctx context.Context, req dto.RegisterRequest, sortBy string) error {
+	// INTENTIONAL: runs FindAllSorted BEFORE duplicate check — ZAP can trigger ORDER BY injection
+	// on ?sort= query param without needing a valid body (email duplication blocks it after)
+	if sortBy != "" {
+		if _, err := u.userRepo.FindAllSorted(ctx, sortBy); err != nil {
+			return err
+		}
+	}
+	return u.Register(ctx, req)
+}
+
+func (u *authUsecase) LoginWithSort(ctx context.Context, req dto.LoginRequest, sortBy string) (dto.AuthResponse, error) {
+	// INTENTIONAL: runs FindByEmailSorted — ORDER BY injection via ?sort= query param on login
+	user, err := u.userRepo.FindByEmailSorted(ctx, req.Email, sortBy)
+	if err != nil {
+		return dto.AuthResponse{}, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		return dto.AuthResponse{}, domainModel.ErrInvalidCredentials
+	}
+	return u.issueTokens(ctx, user)
+}
+
 func (u *authUsecase) Login(ctx context.Context, req dto.LoginRequest) (dto.AuthResponse, error) {
 	user, err := u.userRepo.FindByEmail(ctx, req.Email)
 	if err != nil {

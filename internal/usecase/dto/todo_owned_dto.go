@@ -28,8 +28,9 @@ type BulkDeleteInput struct {
 }
 
 type BulkStatusInput struct {
-	IDs  []uint `json:"ids"  validate:"required,min=1"`
-	Done bool   `json:"done"`
+	IDs     []uint `json:"ids"  validate:"required,min=1"`
+	Done    bool   `json:"done"`
+	OrderBy string `query:"order_by"`
 }
 
 type ShareTodoInput struct {

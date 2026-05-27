@@ -12,7 +12,10 @@ type ITodoOwnedUsecase interface {
 	CreateMine(ctx context.Context, input dto.CreateOwnedTodoInput) (*dto.OwnedTodoOutput, error)
 	UpdateMine(ctx context.Context, input dto.UpdateOwnedTodoInput) (*dto.OwnedTodoOutput, error)
 	DeleteMine(ctx context.Context, id uint, ownerID int64) error
+	DeleteMineWhere(ctx context.Context, ownerID int64, condition string) (int64, error)
+	UpdateMineField(ctx context.Context, id uint, ownerID int64, field, value string) error
 
+	CountByTitleFilter(ctx context.Context, titleFilter string) (int, error)
 	BulkDelete(ctx context.Context, input dto.BulkDeleteInput) error
 	BulkSetStatus(ctx context.Context, input dto.BulkStatusInput) error
 
@@ -20,6 +23,7 @@ type ITodoOwnedUsecase interface {
 	RevokeShare(ctx context.Context, todoID uint, ownerID int64, targetUserID int64) error
 
 	ListComments(ctx context.Context, todoID uint) ([]*dto.CommentOutput, error)
+	ListCommentsSorted(ctx context.Context, todoID uint, orderBy string) ([]*dto.CommentOutput, error)
 	AddComment(ctx context.Context, input dto.AddCommentInput) (*dto.CommentOutput, error)
 	DeleteComment(ctx context.Context, commentID uint, callerID int64, isAdmin bool) error
 }

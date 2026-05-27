@@ -52,6 +52,7 @@ func (u *todoUsecase) List(ctx context.Context, input dto.ListTodoInput) ([]*dto
 	filter := domainModel.TodoFilter{
 		Done:   input.Done,
 		Search: input.Search,
+		SortBy: input.SortBy,
 	}
 	page := domainModel.Pagination{
 		Page:  input.Page,

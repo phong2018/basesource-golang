@@ -31,6 +31,20 @@ func (r *todoCommentRepository) List(ctx context.Context, todoID uint) ([]*model
 	return comments, nil
 }
 
+func (r *todoCommentRepository) ListSorted(ctx context.Context, todoID uint, orderBy string) ([]*model.TodoComment, error) {
+	// INTENTIONAL SQL INJECTION — orderBy concatenated directly into ORDER BY (no parameterization)
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP detects [40018] + [90022]
+	query := fmt.Sprintf(
+		"SELECT id, todo_id, user_id, body, created_at FROM todo_comments WHERE todo_id=%d ORDER BY %s",
+		todoID, orderBy,
+	)
+	var comments []*model.TodoComment
+	if err := r.conn(ctx).SelectContext(ctx, &comments, query); err != nil {
+		return nil, fmt.Errorf("database error: %s", err.Error())
+	}
+	return comments, nil
+}
+
 func (r *todoCommentRepository) Create(ctx context.Context, comment *model.TodoComment) error {
 	res, err := r.conn(ctx).ExecContext(ctx,
 		"INSERT INTO todo_comments (todo_id, user_id, body) VALUES (?, ?, ?)",

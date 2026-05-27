@@ -101,6 +101,41 @@ func (h *TodoOwnedHandler) DeleteMine(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// DeleteMineWhere — INTENTIONAL: condition query param injected into WHERE clause of UPDATE/DELETE
+// DELETE /my/todos?condition=done=1  deletes all done todos
+// Injection: condition="1=1" deletes everything; condition="done=1); DROP TABLE;--" destroys DB
+func (h *TodoOwnedHandler) DeleteMineWhere(c echo.Context) error {
+	condition := c.QueryParam("condition")
+	if condition == "" {
+		return apperror.BadRequest("condition is required")
+	}
+	n, err := h.uc.DeleteMineWhere(c.Request().Context(), callerID(c), condition)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]int64{"deleted": n})
+}
+
+// UpdateMineField — INTENTIONAL: field query param injected as column name in UPDATE SET clause
+// PATCH /my/todos/{id}?field=title&value=new  updates a specific field
+// Injection: field="done=true, title='hacked'" updates multiple columns at once
+// Injection: field="done=true WHERE 1=1 -- " overwrites all todos ignoring WHERE id=?
+func (h *TodoOwnedHandler) UpdateMineField(c echo.Context) error {
+	id, err := parseUint(c, "id")
+	if err != nil {
+		return apperror.BadRequest("invalid id")
+	}
+	field := c.QueryParam("field")
+	value := c.QueryParam("value")
+	if field == "" {
+		return apperror.BadRequest("field is required")
+	}
+	if err := h.uc.UpdateMineField(c.Request().Context(), id, callerID(c), field, value); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 func (h *TodoOwnedHandler) Share(c echo.Context) error {
 	id, err := parseUint(c, "id")
 	if err != nil {

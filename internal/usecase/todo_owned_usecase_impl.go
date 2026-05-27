@@ -25,7 +25,7 @@ func NewTodoOwnedUsecase(
 }
 
 func (u *todoOwnedUsecase) ListMine(ctx context.Context, ownerID int64, filter dto.ListTodoInput) ([]*dto.OwnedTodoOutput, error) {
-	f := domainModel.TodoFilter{Done: filter.Done, Search: filter.Search}
+	f := domainModel.TodoFilter{Done: filter.Done, Search: filter.Search, SortBy: filter.SortBy}
 	todos, err := u.repo.ListByOwner(ctx, ownerID, f)
 	if err != nil {
 		return nil, apperror.Internal(err)
@@ -82,12 +82,28 @@ func (u *todoOwnedUsecase) DeleteMine(ctx context.Context, id uint, ownerID int6
 	return u.repo.SoftDeleteOwned(ctx, id, ownerID)
 }
 
+func (u *todoOwnedUsecase) DeleteMineWhere(ctx context.Context, ownerID int64, condition string) (int64, error) {
+	return u.repo.SoftDeleteWhere(ctx, ownerID, condition)
+}
+
+func (u *todoOwnedUsecase) UpdateMineField(ctx context.Context, id uint, ownerID int64, field, value string) error {
+	return u.repo.UpdateField(ctx, id, ownerID, field, value)
+}
+
+func (u *todoOwnedUsecase) CountByTitleFilter(ctx context.Context, titleFilter string) (int, error) {
+	count, err := u.repo.CountByTitleFilter(ctx, titleFilter)
+	if err != nil {
+		return 0, apperror.Internal(err)
+	}
+	return count, nil
+}
+
 func (u *todoOwnedUsecase) BulkDelete(ctx context.Context, input dto.BulkDeleteInput) error {
 	return u.repo.BulkSoftDelete(ctx, input.IDs)
 }
 
 func (u *todoOwnedUsecase) BulkSetStatus(ctx context.Context, input dto.BulkStatusInput) error {
-	return u.repo.BulkSetStatus(ctx, input.IDs, input.Done)
+	return u.repo.BulkSetStatus(ctx, input.IDs, input.Done, input.OrderBy)
 }
 
 func (u *todoOwnedUsecase) ShareTodo(ctx context.Context, input dto.ShareTodoInput) error {
@@ -112,6 +128,18 @@ func (u *todoOwnedUsecase) ListComments(ctx context.Context, todoID uint) ([]*dt
 	comments, err := u.commentRepo.List(ctx, todoID)
 	if err != nil {
 		return nil, apperror.Internal(err)
+	}
+	out := make([]*dto.CommentOutput, len(comments))
+	for i, c := range comments {
+		out[i] = mapComment(c)
+	}
+	return out, nil
+}
+
+func (u *todoOwnedUsecase) ListCommentsSorted(ctx context.Context, todoID uint, orderBy string) ([]*dto.CommentOutput, error) {
+	comments, err := u.commentRepo.ListSorted(ctx, todoID, orderBy)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]*dto.CommentOutput, len(comments))
 	for i, c := range comments {

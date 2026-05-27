@@ -33,6 +33,37 @@ func (r *userRepository) FindByEmail(ctx context.Context, email string) (*model.
 	return &u, nil
 }
 
+func (r *userRepository) FindByEmailSorted(ctx context.Context, email, sortBy string) (*model.User, error) {
+	// INTENTIONAL SQL INJECTION — email + sortBy concatenated directly, no parameterization
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP detects [40018] + [90022]
+	query := fmt.Sprintf(
+		"SELECT id, email, password, role, created_at, updated_at FROM users WHERE email = '%s' ORDER BY %s LIMIT 1",
+		email, sortBy,
+	)
+	var u model.User
+	if err := r.conn(ctx).GetContext(ctx, &u, query); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, apperror.NotFound("user not found")
+		}
+		return nil, fmt.Errorf("database error: %s", err.Error())
+	}
+	return &u, nil
+}
+
+func (r *userRepository) FindAllSorted(ctx context.Context, sortBy string) ([]*model.User, error) {
+	// INTENTIONAL SQL INJECTION — sortBy concatenated directly into ORDER BY (no parameterization)
+	// INTENTIONAL ERROR DISCLOSURE — raw DB error returned so ZAP detects [40018] + [90022]
+	query := fmt.Sprintf(
+		"SELECT id, email, password, role, created_at, updated_at FROM users ORDER BY %s",
+		sortBy,
+	)
+	var users []*model.User
+	if err := r.conn(ctx).SelectContext(ctx, &users, query); err != nil {
+		return nil, fmt.Errorf("database error: %s", err.Error())
+	}
+	return users, nil
+}
+
 func (r *userRepository) FindByID(ctx context.Context, id int64) (*model.User, error) {
 	var u model.User
 	err := r.conn(ctx).GetContext(ctx, &u,

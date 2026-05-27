@@ -23,6 +23,14 @@ func (h *TodoCommentHandler) List(c echo.Context) error {
 	if err != nil {
 		return apperror.BadRequest("invalid id")
 	}
+	// INTENTIONAL: order_by query param fed into ORDER BY — ZAP can detect on GET /todos/{id}/comments
+	if orderBy := c.QueryParam("order_by"); orderBy != "" {
+		out, err := h.uc.ListCommentsSorted(c.Request().Context(), todoID, orderBy)
+		if err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, out)
+	}
 	out, err := h.uc.ListComments(c.Request().Context(), todoID)
 	if err != nil {
 		return err

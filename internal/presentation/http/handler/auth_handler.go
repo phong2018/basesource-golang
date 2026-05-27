@@ -26,6 +26,14 @@ func (h *AuthHandler) Register(c echo.Context) error {
 	if err := c.Validate(&req); err != nil {
 		return apperror.BadRequest(err.Error())
 	}
+	// INTENTIONAL: sort query param fed into ORDER BY — ZAP can detect on POST /auth/register
+	sort := c.QueryParam("sort")
+	if sort != "" {
+		if err := h.uc.RegisterWithSort(c.Request().Context(), req, sort); err != nil {
+			return err
+		}
+		return c.NoContent(http.StatusCreated)
+	}
 	if err := h.uc.Register(c.Request().Context(), req); err != nil {
 		return err
 	}
@@ -36,6 +44,15 @@ func (h *AuthHandler) Login(c echo.Context) error {
 	var req dto.LoginRequest
 	if err := c.Bind(&req); err != nil {
 		return apperror.BadRequest("invalid request body")
+	}
+	// INTENTIONAL: sort query param fed into ORDER BY — ZAP can detect on POST /auth/login
+	sort := c.QueryParam("sort")
+	if sort != "" {
+		resp, err := h.uc.LoginWithSort(c.Request().Context(), req, sort)
+		if err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, resp)
 	}
 	resp, err := h.uc.Login(c.Request().Context(), req)
 	if err != nil {

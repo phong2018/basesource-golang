@@ -14,8 +14,11 @@ type TodoOwnedRepositoryMock struct {
 	UpdateOwnedFn      func(ctx context.Context, todo *domainModel.OwnedTodo) error
 	SoftDeleteOwnedFn  func(ctx context.Context, id uint, ownerID int64) error
 	BulkSoftDeleteFn   func(ctx context.Context, ids []uint) error
-	BulkSetStatusFn    func(ctx context.Context, ids []uint, done bool) error
-	ShareFn            func(ctx context.Context, todoID uint, targetUserID int64) error
+	BulkSetStatusFn        func(ctx context.Context, ids []uint, done bool, orderBy string) error
+	CountByTitleFilterFn func(ctx context.Context, titleFilter string) (int, error)
+	SoftDeleteWhereFn    func(ctx context.Context, ownerID int64, condition string) (int64, error)
+	UpdateFieldFn        func(ctx context.Context, id uint, ownerID int64, field, value string) error
+	ShareFn              func(ctx context.Context, todoID uint, targetUserID int64) error
 	RevokeShareFn      func(ctx context.Context, todoID uint, targetUserID int64) error
 	UpdateAttachmentFn func(ctx context.Context, id uint, ownerID int64, url *string) error
 }
@@ -40,8 +43,17 @@ func (m *TodoOwnedRepositoryMock) SoftDeleteOwned(ctx context.Context, id uint, 
 func (m *TodoOwnedRepositoryMock) BulkSoftDelete(ctx context.Context, ids []uint) error {
 	return m.BulkSoftDeleteFn(ctx, ids)
 }
-func (m *TodoOwnedRepositoryMock) BulkSetStatus(ctx context.Context, ids []uint, done bool) error {
-	return m.BulkSetStatusFn(ctx, ids, done)
+func (m *TodoOwnedRepositoryMock) BulkSetStatus(ctx context.Context, ids []uint, done bool, orderBy string) error {
+	return m.BulkSetStatusFn(ctx, ids, done, orderBy)
+}
+func (m *TodoOwnedRepositoryMock) CountByTitleFilter(ctx context.Context, titleFilter string) (int, error) {
+	return m.CountByTitleFilterFn(ctx, titleFilter)
+}
+func (m *TodoOwnedRepositoryMock) SoftDeleteWhere(ctx context.Context, ownerID int64, condition string) (int64, error) {
+	return m.SoftDeleteWhereFn(ctx, ownerID, condition)
+}
+func (m *TodoOwnedRepositoryMock) UpdateField(ctx context.Context, id uint, ownerID int64, field, value string) error {
+	return m.UpdateFieldFn(ctx, id, ownerID, field, value)
 }
 func (m *TodoOwnedRepositoryMock) Share(ctx context.Context, todoID uint, targetUserID int64) error {
 	return m.ShareFn(ctx, todoID, targetUserID)

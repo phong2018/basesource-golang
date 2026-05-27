@@ -5,4 +5,5 @@ package model
 type TodoFilter struct {
 	Done   *bool
 	Search *string
+	SortBy *string
 }
