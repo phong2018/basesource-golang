@@ -11,7 +11,9 @@ Go REST API template using Clean Architecture (Hexagonal). Todo CRUD is the work
 - **Object storage:** aws-sdk-go-v2 S3
 - **Logging:** `log/slog` (stdlib)
 
-Full docs in [`wiki/architechture/`](wiki/architechture/).
+Full docs:
+- [`wiki/architechture/clean-architecture.md`](wiki/architechture/clean-architecture.md) — layer rules, dependency flow, folder structure
+- [`wiki/architechture/coding-convention.md`](wiki/architechture/coding-convention.md) — naming, struct tags, error handling patterns
 
 ---
 
