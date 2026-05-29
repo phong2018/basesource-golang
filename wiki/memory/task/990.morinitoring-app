@@ -1,0 +1,3 @@
+i am a team leader of this project i want to manage and monitor to simulator production evironment all thing about this project: kubernetes deployement, scale, mornitor, mysql, kafka, rabitmq,  node-exporter, flutent-bit, zap scan test, k6 check performance
+give me a flow to mange and monitoring, including how to run command, how to show and read the result morintor, explain how to understatn and analysis and explain understand, if needed you can split file to explain in detail.
+write flow plan in /Users/phongle/sources/freelancer/basesource/basesource-golang/wiki/memory/task/990.monitoring-production
