@@ -1,9 +1,38 @@
+---
+# Headless Service — required by StatefulSet for stable pod DNS (mysql-0.mysql-headless.basesource.svc.cluster.local)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-headless
+  namespace: basesource
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
+# ClusterIP Service — used by the app (DATABASE_DSN points to mysql-service:3306)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service
+  namespace: basesource
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: mysql
   namespace: basesource
 spec:
+  serviceName: mysql-headless
   replicas: 1
   selector:
     matchLabels:
@@ -18,31 +47,45 @@ spec:
           image: mysql:8.0
           env:
             - name: MYSQL_ROOT_PASSWORD
-              value: root
+              valueFrom:
+                secretKeyRef:
+                  name: basesource-secret
+                  key: MYSQL_ROOT_PASSWORD
             - name: MYSQL_DATABASE
               value: appdb
             - name: MYSQL_USER
-              value: appuser
+              valueFrom:
+                secretKeyRef:
+                  name: basesource-secret
+                  key: MYSQL_USER
             - name: MYSQL_PASSWORD
-              value: apppass
+              valueFrom:
+                secretKeyRef:
+                  name: basesource-secret
+                  key: MYSQL_PASSWORD
           args: ["--max-connections=500"]
           ports:
             - containerPort: 3306
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
           readinessProbe:
             exec:
               command: ["mysqladmin", "ping", "-h", "localhost"]
             initialDelaySeconds: 10
             periodSeconds: 5
             failureThreshold: 10
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mysql-service
-  namespace: basesource
-spec:
-  selector:
-    app: mysql
-  ports:
-    - port: 3306
-      targetPort: 3306
+          livenessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi

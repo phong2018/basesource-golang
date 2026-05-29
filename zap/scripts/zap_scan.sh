@@ -76,10 +76,16 @@ REGISTER_USER=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/api/v1/auth
   -d '{"email":"user@test.com","password":"Test1234!"}')
 [ "$REGISTER_USER" = "201" ] && pass "user registered" || info "user already exists (HTTP $REGISTER_USER)"
 
-# Promote admin via DB
-docker compose -f "$REPO_ROOT/docker/docker-compose.yaml" exec -T db \
-  mysql -u root -proot appdb \
-  -e "UPDATE users SET role='admin' WHERE email='admin@test.com';" 2>/dev/null
+# Promote admin via DB — try kubectl (k8s) first, fall back to docker compose (local)
+if kubectl -n basesource get pod mysql-0 &>/dev/null; then
+  kubectl exec -n basesource mysql-0 -- \
+    mysql -u appuser -papppass appdb \
+    -e "UPDATE users SET role='admin' WHERE email='admin@test.com';" 2>/dev/null
+else
+  docker compose -f "$REPO_ROOT/docker/docker-compose.yaml" exec -T db \
+    mysql -u root -proot appdb \
+    -e "UPDATE users SET role='admin' WHERE email='admin@test.com';" 2>/dev/null
+fi
 pass "admin role set"
 
 # Capture tokens
@@ -177,12 +183,14 @@ SC=$(curl -s -o /dev/null -w "%{http_code}" "$API/api/v1/my/todos" \
 check "Tampered JWT → 401" "401" "$SC"
 
 # 3 — User accesses another user's todo (cross-ownership)
+# Correct response is 404: the owner_id filter makes the row invisible to non-owners.
+# Returning 403 would confirm the resource exists — 404 avoids that info leak.
 if [ -n "$TODO_ID" ]; then
   SC=$(curl -s -o /dev/null -w "%{http_code}" "$API/api/v1/my/todos/$TODO_ID" \
     -H "Authorization: Bearer $ADMIN_TOKEN")
-  check "Admin token accesses user-owned todo (non-owner)" "403" "$SC"
+  check "Admin token accesses user-owned todo (non-owner)" "404" "$SC"
 else
-  echo "| Cross-ownership check | 403 | SKIP (no todo) | SKIP |" >> "$MANUAL_REPORT"
+  echo "| Cross-ownership check | 404 | SKIP (no todo) | SKIP |" >> "$MANUAL_REPORT"
   info "Cross-ownership check skipped — no test todo"
 fi
 

@@ -4,7 +4,7 @@
 |---|---|---|---|
 | No token on GET /my/todos | 401 | 401 | PASS |
 | Tampered JWT → 401 | 401 | 401 | PASS |
-| Admin token accesses user-owned todo (non-owner) | 403 | 403 | PASS |
+| Admin token accesses user-owned todo (non-owner) | 404 | 404 | PASS |
 | User hits admin bulk-delete → 403 | 403 | 403 | PASS |
 | User hits admin bulk-status → 403 | 403 | 403 | PASS |
 | Admin bulk-delete with valid token | 200 or 204 or 404 | 204 | PASS |
@@ -22,4 +22,4 @@
 - **Total checks:** 14
 - **Passed:** 14
 - **Failed:** 0
-- **Date:** 2026-05-27 14:58:36
+- **Date:** 2026-05-29 12:47:09

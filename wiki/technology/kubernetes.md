@@ -9,11 +9,14 @@ This document describes how the basesource application is structured and deploye
 ```
 kind cluster: basesource
 └── namespace: basesource
-    ├── Infra
-    │   ├── mysql          (Deployment + Service)
-    │   ├── rabbitmq       (Deployment + Service)
-    │   └── kafka          (Deployment + Service)
-    ├── App
+    ├── Infra (StatefulSet)
+    │   ├── mysql          (StatefulSet + headless Service + ClusterIP Service + 10Gi PVC)
+    │   ├── rabbitmq       (StatefulSet + headless Service + ClusterIP Service + 5Gi PVC)
+    │   └── kafka          (StatefulSet + headless Service + ClusterIP Service + 10Gi PVC)
+    ├── Observability (DaemonSet — one pod per node)
+    │   ├── fluent-bit     (DaemonSet + ConfigMap + ClusterRole — log collector)
+    │   └── node-exporter  (DaemonSet + headless Service + ClusterRole — metrics)
+    ├── App (Deployment)
     │   ├── basesource-api     (Deployment × 2 pods + Service + Ingress + HPA)
     │   └── basesource-worker  (Deployment × 2 pods + HPA)
     ├── Config
@@ -21,6 +24,262 @@ kind cluster: basesource
     │   └── basesource-secret  (Secret)
     └── Jobs
         └── basesource-migrate (Job — runs once)
+```
+PVC = PersistentVolumeClaim — a request for storage that survives pod restarts.
+HPA = Horizontal Pod Autoscaler
+
+---
+
+## Pods & Containers
+
+**10 pods total, 1 container per pod** (on a single-node cluster).
+
+| # | Pod | Container | Managed by | Image |
+|---|---|---|---|---|
+| 1 | `basesource-api-xxx-1` | `api` | Deployment | `basesource:local` |
+| 2 | `basesource-api-xxx-2` | `api` | Deployment | `basesource:local` |
+| 3 | `basesource-worker-xxx-1` | `worker` | Deployment | `basesource:local` |
+| 4 | `basesource-worker-xxx-2` | `worker` | Deployment | `basesource:local` |
+| 5 | `mysql-0` | `mysql` | StatefulSet | `mysql:8.0` |
+| 6 | `kafka-0` | `kafka` | StatefulSet | `apache/kafka:3.7.0` |
+| 7 | `rabbitmq-0` | `rabbitmq` | StatefulSet | `rabbitmq:3.13-management` |
+| 8 | `fluent-bit-xxx` | `fluent-bit` | DaemonSet | `fluent/fluent-bit:3.1` |
+| 9 | `node-exporter-xxx` | `node-exporter` | DaemonSet | `prom/node-exporter:v1.8.1` |
+| 10 | `basesource-migrate-xxx` | `migrate` | Job (Completed) | `basesource:local` |
+
+> On a 3-node cluster, DaemonSet pods (fluent-bit, node-exporter) would run 3 pods each — one per node.
+
+### How each pod works
+
+---
+
+#### API pods (×2) — serve HTTP traffic
+
+```
+User → Ingress → Service (round-robin) → API pod :8080
+  handles REST routes (todos, auth)
+  writes to MySQL
+  writes outbox_events + outbox_deliveries to MySQL
+  readinessProbe + livenessProbe: GET /health
+```
+
+```bash
+# Show both API pods
+kubectl get pods -n basesource -l app=basesource-api
+
+# Stream logs from both pods at once
+kubectl logs -n basesource -l app=basesource-api -f --max-log-requests=2
+
+# Check readiness/liveness probe status
+kubectl describe pod -n basesource -l app=basesource-api | grep -A5 "Readiness\|Liveness"
+
+# Hit the API locally via port-forward (picks one pod)
+kubectl port-forward -n basesource svc/basesource-api-svc 8080:80
+curl http://localhost:8080/health
+curl http://localhost:8080/api/v1/todos
+
+# Exec into a pod for live debugging
+kubectl exec -it -n basesource deployment/basesource-api -- /bin/sh
+
+# Scale manually (HPA will override this)
+kubectl scale deployment -n basesource basesource-api --replicas=3
+```
+
+---
+
+#### Worker pods (×2) — background processing, no HTTP port
+
+```
+4 goroutines via errgroup:
+  ├── KafkaOutboxRelay        polls MySQL outbox → publishes to kafka-0:9092
+  ├── KafkaConsumer           reads todo-events topic → DomainEventHandler
+  ├── RabbitMQOutboxRelay     polls MySQL outbox → publishes to rabbitmq-0:5672
+  └── RabbitMQNotifConsumer   reads todo.notifications queue → sends notification
+If any goroutine errors → process exits → K8s restarts pod automatically
+```
+
+```bash
+# Show both worker pods
+kubectl get pods -n basesource -l app=basesource-worker
+
+# Stream worker logs (shows relay + consumer activity)
+kubectl logs -n basesource -l app=basesource-worker -f --max-log-requests=2
+
+# Check restart count — a high count means a goroutine is repeatedly crashing
+kubectl get pods -n basesource -l app=basesource-worker
+
+# Describe to see last exit reason
+kubectl describe pod -n basesource -l app=basesource-worker | grep -A5 "Last State\|Exit Code"
+```
+
+---
+
+#### mysql-0 — primary database (StatefulSet)
+
+```
+Stores: todos, users, outbox_events, outbox_deliveries, refresh_tokens
+PVC: mysql-data-mysql-0 (10Gi) → /var/lib/mysql
+Accessible via: mysql-service:3306
+```
+
+```bash
+# Show pod + PVC
+kubectl get pod mysql-0 -n basesource
+kubectl get pvc mysql-data-mysql-0 -n basesource
+
+# Open a MySQL shell inside the pod
+kubectl exec -it -n basesource mysql-0 -- mysql -u appuser -p appdb
+
+# Run a query directly (non-interactive)
+kubectl exec -n basesource mysql-0 -- \
+  mysql -u appuser -papppass appdb -e "SELECT COUNT(*) FROM todos;"
+
+# Stream MySQL logs
+kubectl logs -n basesource mysql-0 -f
+
+# Port-forward for local GUI tools (TablePlus, DBeaver)
+kubectl port-forward -n basesource pod/mysql-0 3306:3306
+```
+
+---
+
+#### kafka-0 — event streaming (StatefulSet)
+
+```
+Topic: todo-events (3 partitions), KRaft mode (no Zookeeper)
+PVC: kafka-data-kafka-0 (10Gi) → /var/lib/kafka/data
+Accessible via: kafka-service:9092
+```
+
+```bash
+# Show pod + PVC
+kubectl get pod kafka-0 -n basesource
+kubectl get pvc kafka-data-kafka-0 -n basesource
+
+# List topics
+kubectl exec -n basesource kafka-0 -- \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+
+# Describe a topic (partitions, offsets)
+kubectl exec -n basesource kafka-0 -- \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
+  --describe --topic todo-events
+
+# Consume messages from beginning (live tail)
+kubectl exec -it -n basesource kafka-0 -- \
+  /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic todo-events --from-beginning
+
+# Check consumer group lag
+kubectl exec -n basesource kafka-0 -- \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server localhost:9092 --describe --group todo-worker
+
+# Stream Kafka logs
+kubectl logs -n basesource kafka-0 -f
+```
+
+---
+
+#### rabbitmq-0 — notification queue (StatefulSet)
+
+```
+Exchange: todo.events → todo.notifications queue
+PVC: rabbitmq-data-rabbitmq-0 (5Gi) → /var/lib/rabbitmq
+Accessible via: rabbitmq-service:5672 (AMQP), :15672 (management UI)
+```
+
+```bash
+# Show pod + PVC
+kubectl get pod rabbitmq-0 -n basesource
+kubectl get pvc rabbitmq-data-rabbitmq-0 -n basesource
+
+# Open management UI in browser
+kubectl port-forward -n basesource pod/rabbitmq-0 15672:15672
+# then open: http://localhost:15672  (login with secret credentials)
+
+# List queues via CLI
+kubectl exec -n basesource rabbitmq-0 -- rabbitmqctl list_queues name messages
+
+# List exchanges
+kubectl exec -n basesource rabbitmq-0 -- rabbitmqctl list_exchanges
+
+# Check node health
+kubectl exec -n basesource rabbitmq-0 -- rabbitmq-diagnostics ping
+
+# Stream RabbitMQ logs
+kubectl logs -n basesource rabbitmq-0 -f
+```
+
+---
+
+#### fluent-bit — log collector (DaemonSet, 1 per node)
+
+```
+Reads: /var/log/containers/*basesource*.log (host path, read-only)
+Parses: Docker JSON log format from slog JSON output
+Adds: cluster=local, env=development fields
+Outputs: JSON lines to stdout (swap to Loki/Elasticsearch in prod)
+HTTP server on :2020 enabled for readiness probe
+```
+
+```bash
+# Show DaemonSet status (DESIRED = number of nodes)
+kubectl get daemonset fluent-bit -n basesource
+
+# Stream collected logs (shows parsed basesource app logs)
+kubectl logs -n basesource -l app=fluent-bit -f
+
+# Check health + metrics via port-forward (fluent-bit image has no wget/curl)
+kubectl port-forward -n basesource daemonset/fluent-bit 2020:2020
+# then in another terminal:
+curl http://localhost:2020/api/v1/health
+curl http://localhost:2020/api/v1/metrics
+```
+
+---
+
+#### node-exporter — per-node metrics (DaemonSet, 1 per node)
+
+```
+Reads: node root filesystem via hostPath + hostPID + hostNetwork
+Exposes: :9100/metrics — CPU, memory, disk, network per node
+Prometheus discovers via annotation: prometheus.io/scrape=true
+```
+
+```bash
+# Show DaemonSet status
+kubectl get daemonset node-exporter -n basesource
+
+# View raw Prometheus metrics
+kubectl port-forward -n basesource svc/node-exporter-svc 9100:9100
+curl http://localhost:9100/metrics | grep node_cpu
+
+# Check specific metrics (memory, disk)
+curl http://localhost:9100/metrics | grep node_memory_MemAvailable
+curl http://localhost:9100/metrics | grep node_filesystem_avail
+```
+
+---
+
+#### basesource-migrate — one-shot Job (Completed)
+
+```
+Ran once: `app migrate` — applied all goose SQL migrations to MySQL
+Status: Completed — stays visible, not deleted automatically
+```
+
+```bash
+# Check job status
+kubectl get job basesource-migrate -n basesource
+
+# View migration output
+kubectl logs -n basesource job/basesource-migrate
+
+# Re-run migration (delete old job first, then re-apply)
+kubectl delete job basesource-migrate -n basesource
+kubectl apply -f k8s/migrate-job.yaml
+kubectl wait --for=condition=complete job/basesource-migrate -n basesource --timeout=60s
 ```
 
 ---
@@ -65,13 +324,15 @@ Worker Pod 1 / Pod 2  — 4 independent goroutines via errgroup
 k8s/
 ├── namespace.yaml          namespace: basesource
 ├── configmap.yaml          non-secret env vars (ports, topic names, exchange)
-├── secret.yaml             template — CHANGE_ME placeholders
+├── secret.yaml             template — CHANGE_ME placeholders (includes infra credentials)
 ├── secret.local.yaml       local kind values (do not commit prod credentials)
 ├── migrate-job.yaml        one-shot Job: runs `app migrate`
 ├── infra/
-│   ├── mysql.yaml          Deployment + Service
-│   ├── rabbitmq.yaml       Deployment + Service
-│   └── kafka.yaml          Deployment + Service
+│   ├── mysql.yaml          StatefulSet + headless Service + ClusterIP Service + 10Gi PVC
+│   ├── rabbitmq.yaml       StatefulSet + headless Service + ClusterIP Service + 5Gi PVC
+│   ├── kafka.yaml          StatefulSet + headless Service + ClusterIP Service + 10Gi PVC
+│   ├── fluent-bit.yaml     DaemonSet + ConfigMap + ClusterRole/RBAC (log collector)
+│   └── node-exporter.yaml  DaemonSet + headless Service + ClusterRole/RBAC (metrics)
 ├── api/
 │   ├── deployment.yaml     2 replicas, rolling update (maxUnavailable:0, maxSurge:1)
 │   ├── service.yaml        ClusterIP, port 80 → 8080
@@ -81,6 +342,20 @@ k8s/
     ├── deployment.yaml     2 replicas, rolling update (maxUnavailable:1, maxSurge:1)
     └── hpa.yaml            min:2, max:6, target 70% CPU
 ```
+
+---
+
+## Workload Kinds — All Three in Use
+
+| Kind | Used for | Why |
+|---|---|---|
+| `Deployment` | `basesource-api`, `basesource-worker` | Stateless pods — any pod is interchangeable, rolling update, HPA |
+| `StatefulSet` | `mysql`, `kafka`, `rabbitmq` | Stateful — needs stable pod identity (`mysql-0`), stable storage (PVC), ordered startup |
+| `DaemonSet` | `fluent-bit`, `node-exporter` | Node-level agents — must run on **every** node; host path access requires co-location with the node |
+
+**Why StatefulSet for infra?** A Deployment pod can be rescheduled to any node. Without a PVC, data lives on ephemeral container storage and is lost on reschedule. StatefulSet binds each pod to its own PVC (`mysql-data-mysql-0`, `kafka-data-kafka-0`, `rabbitmq-data-rabbitmq-0`) that survives pod restarts.
+
+**Why DaemonSet for observability?** Container logs are written to `/var/log/containers/` on the node's filesystem. A Deployment pod on node A cannot read logs from node B. DaemonSet guarantees one Fluent Bit pod per node so every node's logs are captured. Same applies to Node Exporter — hardware metrics are per-node.
 
 ---
 
@@ -123,8 +398,9 @@ the whole process exits. Kubernetes detects the exit and restarts the pod automa
 |---|---|
 | `APP_PORT`, `KAFKA_TOPIC`, `RABBITMQ_EXCHANGE` | ConfigMap — safe to version control |
 | `DATABASE_DSN`, `RABBITMQ_URL`, `KAFKA_BROKERS`, `AWS_*` | Secret — never in git |
+| `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD`, `RABBITMQ_DEFAULT_USER/PASS` | Secret — infra credentials referenced via `secretKeyRef` in StatefulSet env |
 
-Both are injected via `envFrom` — the app reads them as normal environment variables.
+App pods use `envFrom` (bulk inject all keys). StatefulSet infra pods use `secretKeyRef` per key for fine-grained control.
 
 ### HPA Scaling Boundaries
 
@@ -184,9 +460,10 @@ Dependencies must be ready before the next step:
 ```
 1. namespace
 2. configmap + secret
-3. infra (mysql, rabbitmq, kafka)       ← wait for readiness
-4. migrate-job                          ← wait for complete
-5. api + worker                         ← wait for readiness
+3. infra StatefulSets (mysql, rabbitmq, kafka)   ← wait for readiness
+4. infra DaemonSets (fluent-bit, node-exporter)  ← no dependency, can apply alongside step 3
+5. migrate-job                                   ← wait for complete
+6. api + worker                                  ← wait for readiness
 ```
 
 Full deploy script:
@@ -201,6 +478,7 @@ kubectl apply -f k8s/migrate-job.yaml
 kubectl -n basesource wait --for=condition=complete job/basesource-migrate --timeout=60s
 kubectl apply -f k8s/api/ -f k8s/worker/
 kubectl -n basesource get pods
+kubectl -n basesource get statefulsets,daemonsets,pvc
 ```
 
 ---

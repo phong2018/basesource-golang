@@ -1,0 +1,137 @@
+---
+# Fluent Bit ConfigMap — log parsing + output rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: basesource
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         5
+        Daemon        Off
+        Log_Level     info
+        Parsers_File  parsers.conf
+        HTTP_Server   On
+        HTTP_Listen   0.0.0.0
+        HTTP_Port     2020
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/*basesource*.log
+        Parser            docker
+        Tag               basesource.*
+        Refresh_Interval  5
+        Mem_Buf_Limit     5MB
+        Skip_Long_Lines   On
+
+    [FILTER]
+        Name   record_modifier
+        Match  basesource.*
+        Record cluster  local
+        Record env      development
+
+    [OUTPUT]
+        Name   stdout
+        Match  basesource.*
+        Format json_lines
+
+  parsers.conf: |
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+---
+# ClusterRole — read node logs and pod metadata
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: basesource
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit
+subjects:
+  - kind: ServiceAccount
+    name: fluent-bit
+    namespace: basesource
+---
+# DaemonSet — one Fluent Bit pod per node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: basesource
+  labels:
+    app: fluent-bit
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+    spec:
+      serviceAccountName: fluent-bit
+      tolerations:
+        # Also run on control-plane nodes so no logs are missed
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: fluent-bit-config
+              mountPath: /fluent-bit/etc/
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 2020
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      # Host paths — why DaemonSet is required:
+      # Container logs live on the node filesystem. A Deployment pod may land on
+      # any node and would miss logs from other nodes. DaemonSet guarantees one
+      # collector per node so every node's /var/log is covered.
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: fluent-bit-config
+          configMap:
+            name: fluent-bit-config

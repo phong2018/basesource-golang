@@ -1,0 +1,113 @@
+---
+# ClusterRole — read node metrics
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-exporter
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-exporter
+  namespace: basesource
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-exporter
+subjects:
+  - kind: ServiceAccount
+    name: node-exporter
+    namespace: basesource
+---
+# DaemonSet — one Node Exporter pod per node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: basesource
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+      annotations:
+        # Prometheus auto-discovery — scrape this pod's /metrics endpoint
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      serviceAccountName: node-exporter
+      hostNetwork: true   # bind on the node's network interface
+      hostPID: true       # read process-level stats from the node
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.8.1
+          args:
+            - --path.rootfs=/host
+            - --collector.filesystem.ignored-mount-points=^/(dev|proc|sys|run|snap)($|/)
+          ports:
+            - containerPort: 9100
+              hostPort: 9100
+              name: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: rootfs
+              mountPath: /host
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9100
+            initialDelaySeconds: 5
+            periodSeconds: 15
+      # Mount the node's root filesystem read-only so node-exporter can read
+      # disk/filesystem stats. A Deployment pod on one node cannot see other
+      # nodes' filesystems — DaemonSet is required for full cluster coverage.
+      volumes:
+        - name: rootfs
+          hostPath:
+            path: /
+---
+# Service — lets Prometheus discover node-exporter pods by label
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-exporter-svc
+  namespace: basesource
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    app: node-exporter
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+  clusterIP: None   # headless — Prometheus scrapes each pod directly
