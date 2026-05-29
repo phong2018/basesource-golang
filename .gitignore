@@ -3,3 +3,4 @@ docker/db/data/
 bin/
 tmp/
 *.out
+.bka/

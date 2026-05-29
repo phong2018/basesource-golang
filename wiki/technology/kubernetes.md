@@ -505,6 +505,20 @@ killing pods, rolling updates, scaling, log tailing, exec into containers, and r
 > - **StatefulSet**: stateful apps that need stable identity (pod-0, pod-1), stable storage, ordered startup/shutdown. Use for databases, Kafka, Zookeeper.
 > - **DaemonSet**: runs exactly one pod per node. Use for log collectors (Fluentd), monitoring agents (Prometheus node-exporter).
 
+#### Detailed Comparison
+
+| Feature | Deployment | StatefulSet | DaemonSet |
+|---|---|---|---|
+| **Purpose** | Stateless apps, scalable | Stateful apps, unique identities | One pod per node, often for system tasks |
+| **Pod Identity** | Identical, interchangeable | Each pod has a unique name | Identical pods on every node |
+| **Scaling** | Easy to scale up/down | Scale by adding/removing pods | Fixed, one per node (automatic) |
+| **Storage** | Usually stateless, ephemeral | Persistent storage per pod | No storage focus, just a system role |
+| **Updates** | Rolling updates, zero downtime | Ordered, controlled updates | No updates per se, all nodes get it |
+| **Communication** | Pods can communicate with any other pod in the cluster | Pods can communicate with any other pod in the cluster | Pods can communicate with any other pod in the cluster |
+| **Use Case** | Web apps, microservices | Databases, stateful services | Logging, monitoring agents |
+
+> **Note on Communication**: Kubernetes uses a flat network model where any pod can reach any other pod regardless of the controller type (Deployment, StatefulSet, or DaemonSet). The key difference is **service discovery** — only StatefulSet provides stable DNS names (e.g. `mysql-0.mysql-service`) for each pod, which matters when connecting to specific pod instances. For general pod-to-pod communication, all three work identically.
+
 **Q4: What is a Service? What types of Services exist?**
 > A Service provides a stable IP/DNS for a group of pods (selector-based). Types:
 > - **ClusterIP** (default): only accessible inside the cluster. Use for internal communication.
